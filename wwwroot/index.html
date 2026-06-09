@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>FileShareExpert</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <main class="container">
+    <h1>FileShareExpert</h1>
+    <p class="muted">Веб-интерфейс файлообменника</p>
+    <div id="messageBox" class="message-box hidden" role="alert"></div>
+
+    <section class="card">
+      <h2>Пользователь</h2>
+      <div class="grid two">
+        <label>
+          Логин
+          <input id="username" type="text" placeholder="user1">
+        </label>
+        <label>
+          Пароль
+          <input id="password" type="password" placeholder="password">
+        </label>
+      </div>
+      <div class="actions">
+        <button id="registerBtn">Регистрация</button>
+        <button id="loginBtn">Войти</button>
+        <button id="logoutBtn" class="secondary">Выйти</button>
+      </div>
+      <p id="authInfo" class="muted">Не авторизован</p>
+    </section>
+
+    <section class="card">
+      <h2>Загрузка файла</h2>
+      <div class="actions">
+        <input id="uploadFileInput" type="file">
+        <button id="uploadBtn">Загрузить</button>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Мои файлы</h2>
+      <div class="actions">
+        <button id="refreshFilesBtn" class="secondary">Обновить список</button>
+      </div>
+      <div id="filesContainer" class="files"></div>
+    </section>
+
+    <section class="card">
+      <h2>Скачивание по ссылке</h2>
+      <p class="muted">Можно скачать файл по share token или полной ссылке.</p>
+      <label>
+        Token или URL
+        <input id="shareInput" type="text" placeholder="token или http://localhost:5071/api/share/token">
+      </label>
+      <div class="actions">
+        <button id="downloadByShareBtn">Скачать по ссылке</button>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Логи</h2>
+      <pre id="log"></pre>
+    </section>
+  </main>
+
+  <template id="fileTemplate">
+    <article class="file-item">
+      <header>
+        <strong class="file-name"></strong>
+        <span class="file-meta"></span>
+      </header>
+
+      <div class="actions wrap">
+        <button class="download-btn">Скачать</button>
+        <button class="delete-btn danger">Удалить</button>
+      </div>
+
+      <div class="rename-row">
+        <input class="rename-input" type="text" placeholder="Новое имя файла">
+        <button class="rename-btn">Переименовать</button>
+      </div>
+
+      <div class="share-row">
+        <button class="create-share-btn">Создать/получить ссылку</button>
+        <button class="disable-share-btn secondary">Отключить ссылку</button>
+      </div>
+
+      <label>
+        Ссылка
+        <input class="share-url" type="text" readonly>
+      </label>
+
+      <div class="whitelist-row">
+        <input class="whitelist-user-input" type="text" placeholder="Логин пользователя">
+        <button class="add-whitelist-btn">Добавить в белый список</button>
+        <button class="load-whitelist-btn secondary">Показать whitelist</button>
+      </div>
+
+      <div class="whitelist-list"></div>
+    </article>
+  </template>
+
+  <script src="/app.js"></script>
+</body>
+</html>
