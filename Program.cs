@@ -64,7 +64,7 @@ app.MapPost("/api/auth/register", async (AuthRequest request) =>
     return Results.Ok(new { message = "Пользователь зарегистрирован." });
 });
 
-app.MapPost("/api/auth/login", async (AuthRequest request) =>
+app.MapPost("/api/auth/login", async (AuthRequest request, HttpResponse httpResponse) =>
 {
     await using var connection = new SqliteConnection(connectionString);
     await connection.OpenAsync();
@@ -106,6 +106,14 @@ app.MapPost("/api/auth/login", async (AuthRequest request) =>
     sessionCommand.Parameters.AddWithValue("$expiresAt", expiresAt);
     await sessionCommand.ExecuteNonQueryAsync();
 
+    httpResponse.Cookies.Append("fs_token", token, new CookieOptions
+    {
+        Expires = DateTimeOffset.UtcNow.AddDays(30),
+        HttpOnly = false,
+        IsEssential = true,
+        SameSite = SameSiteMode.Lax
+    });
+
     return Results.Ok(new
     {
         token,
@@ -119,6 +127,29 @@ app.MapGet("/api/auth/me", async (HttpRequest httpRequest) =>
     return user is null
         ? Results.Unauthorized()
         : Results.Ok(new { user.Id, user.Username });
+});
+
+app.MapPost("/api/auth/logout", async (HttpRequest httpRequest, HttpResponse httpResponse) =>
+{
+    var tokenHeader = httpRequest.Headers.Authorization.ToString();
+    var tokenFromHeader = tokenHeader.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase)
+        ? tokenHeader["Bearer ".Length..].Trim()
+        : string.Empty;
+    var tokenFromCookie = httpRequest.Cookies["fs_token"]?.Trim() ?? string.Empty;
+    var token = !string.IsNullOrWhiteSpace(tokenFromHeader) ? tokenFromHeader : tokenFromCookie;
+
+    if (!string.IsNullOrWhiteSpace(token))
+    {
+        await using var connection = new SqliteConnection(connectionString);
+        await connection.OpenAsync();
+        var command = connection.CreateCommand();
+        command.CommandText = "DELETE FROM user_sessions WHERE token = $token;";
+        command.Parameters.AddWithValue("$token", token);
+        await command.ExecuteNonQueryAsync();
+    }
+
+    httpResponse.Cookies.Delete("fs_token");
+    return Results.Ok(new { message = "Вы вышли из системы." });
 });
 
 app.MapPost("/api/files/upload", async (HttpRequest httpRequest) =>
@@ -336,19 +367,15 @@ app.MapPost("/api/files/{id:long}/share", async (long id, HttpRequest httpReques
     selectCommand.Parameters.AddWithValue("$fileId", id);
     selectCommand.Parameters.AddWithValue("$ownerId", user.Id);
 
-    var existingToken = (string?)await selectCommand.ExecuteScalarAsync();
-    if (existingToken is null)
+    await using var shareReader = await selectCommand.ExecuteReaderAsync();
+    if (!await shareReader.ReadAsync())
     {
-        var existsCommand = connection.CreateCommand();
-        existsCommand.CommandText = "SELECT COUNT(1) FROM files WHERE id = $fileId AND owner_id = $ownerId;";
-        existsCommand.Parameters.AddWithValue("$fileId", id);
-        existsCommand.Parameters.AddWithValue("$ownerId", user.Id);
-        var exists = Convert.ToInt32(await existsCommand.ExecuteScalarAsync() ?? 0) > 0;
-        if (!exists)
-        {
-            return Results.NotFound(new { error = "Файл не найден." });
-        }
+        return Results.NotFound(new { error = "Файл не найден." });
+    }
 
+    var existingToken = shareReader.IsDBNull(0) ? null : shareReader.GetString(0);
+    if (string.IsNullOrWhiteSpace(existingToken))
+    {
         existingToken = GenerateToken();
         var updateCommand = connection.CreateCommand();
         updateCommand.CommandText = """
@@ -638,12 +665,13 @@ static void InitializeDatabase(string connectionString)
 static async Task<UserInfo?> GetAuthenticatedUser(HttpRequest request, string connectionString)
 {
     var tokenHeader = request.Headers.Authorization.ToString();
-    if (string.IsNullOrWhiteSpace(tokenHeader) || !tokenHeader.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase))
+    var token = tokenHeader.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase)
+        ? tokenHeader["Bearer ".Length..].Trim()
+        : string.Empty;
+    if (string.IsNullOrWhiteSpace(token))
     {
-        return null;
+        token = request.Cookies["fs_token"]?.Trim() ?? string.Empty;
     }
-
-    var token = tokenHeader["Bearer ".Length..].Trim();
     if (string.IsNullOrWhiteSpace(token))
     {
         return null;

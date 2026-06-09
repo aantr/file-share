@@ -151,11 +151,22 @@ async function login() {
 }
 
 function logout() {
-  state.user = null;
-  setToken("");
-  setAuthInfo();
-  el.filesContainer.innerHTML = "";
-  writeLog("Выход выполнен.");
+  (async () => {
+    try {
+      await requestJson("/api/auth/logout", {
+        method: "POST",
+        headers: authHeaders()
+      });
+    } catch {
+      // Ignore logout API errors, local state still cleared.
+    } finally {
+      state.user = null;
+      setToken("");
+      setAuthInfo();
+      el.filesContainer.innerHTML = "";
+      writeLog("Выход выполнен.");
+    }
+  })();
 }
 
 async function uploadFile() {
@@ -203,8 +214,48 @@ function tokenFromInput(raw) {
   return value;
 }
 
-function downloadUrl(url) {
-  window.open(url, "_blank");
+function fileNameFromDisposition(disposition) {
+  if (!disposition) return "";
+  const utf8Match = disposition.match(/filename\*=UTF-8''([^;]+)/i);
+  if (utf8Match?.[1]) {
+    try {
+      return decodeURIComponent(utf8Match[1]);
+    } catch {
+      return utf8Match[1];
+    }
+  }
+  const basicMatch = disposition.match(/filename="?([^"]+)"?/i);
+  return basicMatch?.[1] || "";
+}
+
+async function downloadUrl(url, fallbackFileName) {
+  const response = await fetch(url, {
+    headers: authHeaders()
+  });
+
+  if (!response.ok) {
+    let message = `HTTP ${response.status}`;
+    try {
+      const payload = await response.json();
+      message = payload?.error || payload?.message || message;
+    } catch {
+      // Keep default message for non-JSON response
+    }
+    throw new Error(message);
+  }
+
+  const blob = await response.blob();
+  const disposition = response.headers.get("Content-Disposition");
+  const finalName = fileNameFromDisposition(disposition) || fallbackFileName || "download.bin";
+
+  const objectUrl = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = objectUrl;
+  link.download = finalName;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(objectUrl);
 }
 
 async function loadWhitelist(fileId, container) {
@@ -263,8 +314,13 @@ function renderFiles(files) {
     const shareUrlInput = node.querySelector(".share-url");
     shareUrlInput.value = file.shareUrl || "";
 
-    node.querySelector(".download-btn").addEventListener("click", () => {
-      downloadUrl(`/api/files/${file.id}/download`);
+    node.querySelector(".download-btn").addEventListener("click", async () => {
+      try {
+        await downloadUrl(`/api/files/${file.id}/download`, file.name);
+        writeLog(`Скачан файл: ${file.name}`);
+      } catch (error) {
+        writeLog(error.message, true);
+      }
     });
 
     node.querySelector(".delete-btn").addEventListener("click", async () => {
@@ -382,13 +438,19 @@ async function loadFiles() {
   }
 }
 
-function downloadByShare() {
+async function downloadByShare() {
   const token = tokenFromInput(el.shareInput.value);
   if (!token) {
     writeLog("Введите token или ссылку.", true);
     return;
   }
-  downloadUrl(`/api/share/${token}`);
+
+  try {
+    await downloadUrl(`/api/share/${token}`);
+    writeLog("Скачивание по ссылке запущено.");
+  } catch (error) {
+    writeLog(error.message, true);
+  }
 }
 
 el.registerBtn.addEventListener("click", register);
