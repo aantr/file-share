@@ -86,6 +86,14 @@ dotnet run --project FileShareExpert.csproj
 
 После запуска откройте в браузере `http://localhost:5071/`.
 
+## 5) Запуск тестов
+
+```bash
+dotnet test FileShareExpert.Tests/FileShareExpert.Tests.csproj
+```
+
+Покрыты основные сценарии: регистрация/логин, `me`, upload/list/download/rename/delete, share, whitelist и проверка CSRF.
+
 ## Где хранятся данные
 
 - База SQLite: `storage/fileshare.db`
