@@ -9,6 +9,7 @@ var app = builder.Build();
 
 var storageRoot = Path.Combine(app.Environment.ContentRootPath, "storage");
 var uploadsRoot = Path.Combine(storageRoot, "uploads");
+const long maxUploadBytes = 50L * 1024 * 1024;
 Directory.CreateDirectory(storageRoot);
 Directory.CreateDirectory(uploadsRoot);
 
@@ -64,8 +65,13 @@ app.MapPost("/api/auth/register", async (AuthRequest request) =>
     return Results.Ok(new { message = "Пользователь зарегистрирован." });
 });
 
-app.MapPost("/api/auth/login", async (AuthRequest request, HttpResponse httpResponse) =>
+app.MapPost("/api/auth/login", async (AuthRequest request, HttpRequest httpRequest, HttpResponse httpResponse) =>
 {
+    if (string.IsNullOrWhiteSpace(request.Username) || string.IsNullOrWhiteSpace(request.Password))
+    {
+        return Results.BadRequest(new { error = "Имя пользователя и пароль обязательны." });
+    }
+
     await using var connection = new SqliteConnection(connectionString);
     await connection.OpenAsync();
 
@@ -78,75 +84,97 @@ app.MapPost("/api/auth/login", async (AuthRequest request, HttpResponse httpResp
                           """;
     command.Parameters.AddWithValue("$username", request.Username.Trim());
 
-    await using var reader = await command.ExecuteReaderAsync();
-    if (!await reader.ReadAsync())
+    long userId;
+    string username;
+    string passwordHash;
+    await using (var reader = await command.ExecuteReaderAsync())
+    {
+        if (!await reader.ReadAsync())
+        {
+            return Results.Unauthorized();
+        }
+
+        userId = reader.GetInt64(0);
+        username = reader.GetString(1);
+        passwordHash = reader.GetString(2);
+    }
+
+    if (!VerifyPassword(request.Password, passwordHash))
     {
         return Results.Unauthorized();
     }
 
-    var userId = reader.GetInt64(0);
-    var username = reader.GetString(1);
-    var passwordHash = reader.GetString(2);
-
-    if (!string.Equals(passwordHash, HashPassword(request.Password), StringComparison.Ordinal))
+    if (IsLegacySha256Hash(passwordHash))
     {
-        return Results.Unauthorized();
+        var rehashCommand = connection.CreateCommand();
+        rehashCommand.CommandText = """
+                                    UPDATE users
+                                    SET password_hash = $newHash
+                                    WHERE id = $userId;
+                                    """;
+        rehashCommand.Parameters.AddWithValue("$newHash", HashPassword(request.Password));
+        rehashCommand.Parameters.AddWithValue("$userId", userId);
+        await rehashCommand.ExecuteNonQueryAsync();
     }
 
     var token = GenerateToken();
+    var csrfToken = GenerateToken();
     var expiresAt = DateTime.UtcNow.AddDays(30).ToString("O");
 
     var sessionCommand = connection.CreateCommand();
     sessionCommand.CommandText = """
-                                 INSERT INTO user_sessions (token, user_id, expires_at)
-                                 VALUES ($token, $userId, $expiresAt);
+                                 INSERT INTO user_sessions (token, user_id, expires_at, csrf_token)
+                                 VALUES ($token, $userId, $expiresAt, $csrfToken);
                                  """;
     sessionCommand.Parameters.AddWithValue("$token", token);
     sessionCommand.Parameters.AddWithValue("$userId", userId);
     sessionCommand.Parameters.AddWithValue("$expiresAt", expiresAt);
+    sessionCommand.Parameters.AddWithValue("$csrfToken", csrfToken);
     await sessionCommand.ExecuteNonQueryAsync();
 
     httpResponse.Cookies.Append("fs_token", token, new CookieOptions
     {
         Expires = DateTimeOffset.UtcNow.AddDays(30),
-        HttpOnly = false,
+        HttpOnly = true,
+        Secure = httpRequest.IsHttps,
         IsEssential = true,
         SameSite = SameSiteMode.Lax
     });
 
     return Results.Ok(new
     {
-        token,
+        csrfToken,
         user = new { id = userId, username }
     });
 });
 
 app.MapGet("/api/auth/me", async (HttpRequest httpRequest) =>
 {
-    var user = await GetAuthenticatedUser(httpRequest, connectionString);
-    return user is null
+    var session = await GetAuthenticatedSession(httpRequest, connectionString);
+    return session is null
         ? Results.Unauthorized()
-        : Results.Ok(new { user.Id, user.Username });
+        : Results.Ok(new
+        {
+            id = session.User.Id,
+            username = session.User.Username,
+            csrfToken = session.CsrfToken
+        });
 });
 
 app.MapPost("/api/auth/logout", async (HttpRequest httpRequest, HttpResponse httpResponse) =>
 {
-    var tokenHeader = httpRequest.Headers.Authorization.ToString();
-    var tokenFromHeader = tokenHeader.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase)
-        ? tokenHeader["Bearer ".Length..].Trim()
-        : string.Empty;
-    var tokenFromCookie = httpRequest.Cookies["fs_token"]?.Trim() ?? string.Empty;
-    var token = !string.IsNullOrWhiteSpace(tokenFromHeader) ? tokenFromHeader : tokenFromCookie;
-
-    if (!string.IsNullOrWhiteSpace(token))
+    var session = await GetAuthenticatedSession(httpRequest, connectionString, requireCsrf: true);
+    if (session is null)
     {
-        await using var connection = new SqliteConnection(connectionString);
-        await connection.OpenAsync();
-        var command = connection.CreateCommand();
-        command.CommandText = "DELETE FROM user_sessions WHERE token = $token;";
-        command.Parameters.AddWithValue("$token", token);
-        await command.ExecuteNonQueryAsync();
+        return Results.Unauthorized();
     }
+
+    await using var connection = new SqliteConnection(connectionString);
+    await connection.OpenAsync();
+    var command = connection.CreateCommand();
+    command.CommandText = "DELETE FROM user_sessions WHERE token = $token;";
+    command.Parameters.AddWithValue("$token", session.SessionToken);
+    await command.ExecuteNonQueryAsync();
 
     httpResponse.Cookies.Delete("fs_token");
     return Results.Ok(new { message = "Вы вышли из системы." });
@@ -154,8 +182,8 @@ app.MapPost("/api/auth/logout", async (HttpRequest httpRequest, HttpResponse htt
 
 app.MapPost("/api/files/upload", async (HttpRequest httpRequest) =>
 {
-    var user = await GetAuthenticatedUser(httpRequest, connectionString);
-    if (user is null)
+    var session = await GetAuthenticatedSession(httpRequest, connectionString, requireCsrf: true);
+    if (session is null)
     {
         return Results.Unauthorized();
     }
@@ -171,53 +199,79 @@ app.MapPost("/api/files/upload", async (HttpRequest httpRequest) =>
     {
         return Results.BadRequest(new { error = "Файл не передан." });
     }
+    if (file.Length > maxUploadBytes)
+    {
+        return Results.BadRequest(new { error = $"Размер файла не должен превышать {maxUploadBytes / (1024 * 1024)} MB." });
+    }
 
     var extension = Path.GetExtension(file.FileName);
     var storedName = $"{Guid.NewGuid():N}{extension}";
     var destinationPath = Path.Combine(uploadsRoot, storedName);
+    var tempPath = Path.Combine(uploadsRoot, $"{storedName}.uploading");
 
-    await using (var stream = File.Create(destinationPath))
+    await using (var stream = File.Create(tempPath))
     {
         await file.CopyToAsync(stream);
     }
 
     await using var connection = new SqliteConnection(connectionString);
     await connection.OpenAsync();
+    using var transaction = connection.BeginTransaction();
 
-    var command = connection.CreateCommand();
-    command.CommandText = """
-                          INSERT INTO files (owner_id, original_name, stored_name, size, content_type, created_at)
-                          VALUES ($ownerId, $originalName, $storedName, $size, $contentType, $createdAt);
-                          """;
-    command.Parameters.AddWithValue("$ownerId", user.Id);
-    command.Parameters.AddWithValue("$originalName", file.FileName);
-    command.Parameters.AddWithValue("$storedName", storedName);
-    command.Parameters.AddWithValue("$size", file.Length);
-    command.Parameters.AddWithValue("$contentType", file.ContentType ?? "application/octet-stream");
-    command.Parameters.AddWithValue("$createdAt", DateTime.UtcNow.ToString("O"));
-
-    await command.ExecuteNonQueryAsync();
-
-    var idCommand = connection.CreateCommand();
-    idCommand.CommandText = "SELECT last_insert_rowid();";
-    var fileId = (long)(await idCommand.ExecuteScalarAsync() ?? 0L);
-
-    return Results.Ok(new
+    try
     {
-        message = "Файл загружен.",
-        file = new
+        var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+                              INSERT INTO files (owner_id, original_name, stored_name, size, content_type, created_at)
+                              VALUES ($ownerId, $originalName, $storedName, $size, $contentType, $createdAt);
+                              """;
+        command.Parameters.AddWithValue("$ownerId", session.User.Id);
+        command.Parameters.AddWithValue("$originalName", file.FileName);
+        command.Parameters.AddWithValue("$storedName", storedName);
+        command.Parameters.AddWithValue("$size", file.Length);
+        command.Parameters.AddWithValue("$contentType", file.ContentType ?? "application/octet-stream");
+        command.Parameters.AddWithValue("$createdAt", DateTime.UtcNow.ToString("O"));
+        await command.ExecuteNonQueryAsync();
+
+        var idCommand = connection.CreateCommand();
+        idCommand.Transaction = transaction;
+        idCommand.CommandText = "SELECT last_insert_rowid();";
+        var fileId = (long)(await idCommand.ExecuteScalarAsync() ?? 0L);
+
+        File.Move(tempPath, destinationPath, overwrite: false);
+        transaction.Commit();
+
+        return Results.Ok(new
         {
-            id = fileId,
-            name = file.FileName,
-            size = file.Length
+            message = "Файл загружен.",
+            file = new
+            {
+                id = fileId,
+                name = file.FileName,
+                size = file.Length
+            }
+        });
+    }
+    catch
+    {
+        transaction.Rollback();
+        if (File.Exists(tempPath))
+        {
+            File.Delete(tempPath);
         }
-    });
+        if (File.Exists(destinationPath))
+        {
+            File.Delete(destinationPath);
+        }
+        return Results.StatusCode(StatusCodes.Status500InternalServerError);
+    }
 });
 
 app.MapGet("/api/files", async (HttpRequest httpRequest) =>
 {
-    var user = await GetAuthenticatedUser(httpRequest, connectionString);
-    if (user is null)
+    var session = await GetAuthenticatedSession(httpRequest, connectionString);
+    if (session is null)
     {
         return Results.Unauthorized();
     }
@@ -232,7 +286,7 @@ app.MapGet("/api/files", async (HttpRequest httpRequest) =>
                           WHERE owner_id = $ownerId
                           ORDER BY created_at DESC;
                           """;
-    command.Parameters.AddWithValue("$ownerId", user.Id);
+    command.Parameters.AddWithValue("$ownerId", session.User.Id);
 
     var files = new List<object>();
     await using var reader = await command.ExecuteReaderAsync();
@@ -256,13 +310,13 @@ app.MapGet("/api/files", async (HttpRequest httpRequest) =>
 
 app.MapGet("/api/files/{id:long}/download", async (long id, HttpRequest httpRequest) =>
 {
-    var user = await GetAuthenticatedUser(httpRequest, connectionString);
-    if (user is null)
+    var session = await GetAuthenticatedSession(httpRequest, connectionString);
+    if (session is null)
     {
         return Results.Unauthorized();
     }
 
-    var fileInfo = await GetFileOwnedByUser(connectionString, id, user.Id);
+    var fileInfo = await GetFileOwnedByUser(connectionString, id, session.User.Id);
     if (fileInfo is null)
     {
         return Results.NotFound(new { error = "Файл не найден." });
@@ -280,35 +334,61 @@ app.MapGet("/api/files/{id:long}/download", async (long id, HttpRequest httpRequ
 
 app.MapDelete("/api/files/{id:long}", async (long id, HttpRequest httpRequest) =>
 {
-    var user = await GetAuthenticatedUser(httpRequest, connectionString);
-    if (user is null)
+    var session = await GetAuthenticatedSession(httpRequest, connectionString, requireCsrf: true);
+    if (session is null)
     {
         return Results.Unauthorized();
     }
 
-    var fileInfo = await GetFileOwnedByUser(connectionString, id, user.Id);
+    var fileInfo = await GetFileOwnedByUser(connectionString, id, session.User.Id);
     if (fileInfo is null)
     {
         return Results.NotFound(new { error = "Файл не найден." });
     }
 
+    var fullPath = Path.Combine(uploadsRoot, fileInfo.StoredName);
+    if (!File.Exists(fullPath))
+    {
+        return Results.NotFound(new { error = "Файл отсутствует на диске." });
+    }
+
+    var quarantinePath = Path.Combine(uploadsRoot, $"{fileInfo.StoredName}.deleting.{Guid.NewGuid():N}");
+
     await using var connection = new SqliteConnection(connectionString);
     await connection.OpenAsync();
+    using var transaction = connection.BeginTransaction();
 
-    var deleteWhitelist = connection.CreateCommand();
-    deleteWhitelist.CommandText = "DELETE FROM file_whitelist WHERE file_id = $fileId;";
-    deleteWhitelist.Parameters.AddWithValue("$fileId", id);
-    await deleteWhitelist.ExecuteNonQueryAsync();
-
-    var deleteFile = connection.CreateCommand();
-    deleteFile.CommandText = "DELETE FROM files WHERE id = $fileId;";
-    deleteFile.Parameters.AddWithValue("$fileId", id);
-    await deleteFile.ExecuteNonQueryAsync();
-
-    var fullPath = Path.Combine(uploadsRoot, fileInfo.StoredName);
-    if (File.Exists(fullPath))
+    try
     {
-        File.Delete(fullPath);
+        File.Move(fullPath, quarantinePath, overwrite: false);
+
+        var deleteWhitelist = connection.CreateCommand();
+        deleteWhitelist.Transaction = transaction;
+        deleteWhitelist.CommandText = "DELETE FROM file_whitelist WHERE file_id = $fileId;";
+        deleteWhitelist.Parameters.AddWithValue("$fileId", id);
+        await deleteWhitelist.ExecuteNonQueryAsync();
+
+        var deleteFile = connection.CreateCommand();
+        deleteFile.Transaction = transaction;
+        deleteFile.CommandText = "DELETE FROM files WHERE id = $fileId;";
+        deleteFile.Parameters.AddWithValue("$fileId", id);
+        var affected = await deleteFile.ExecuteNonQueryAsync();
+        if (affected == 0)
+        {
+            throw new InvalidOperationException("File row was not deleted.");
+        }
+
+        transaction.Commit();
+        File.Delete(quarantinePath);
+    }
+    catch
+    {
+        transaction.Rollback();
+        if (File.Exists(quarantinePath) && !File.Exists(fullPath))
+        {
+            File.Move(quarantinePath, fullPath, overwrite: false);
+        }
+        return Results.StatusCode(StatusCodes.Status500InternalServerError);
     }
 
     return Results.Ok(new { message = "Файл удалён." });
@@ -316,8 +396,8 @@ app.MapDelete("/api/files/{id:long}", async (long id, HttpRequest httpRequest) =
 
 app.MapPut("/api/files/{id:long}/rename", async (long id, RenameRequest request, HttpRequest httpRequest) =>
 {
-    var user = await GetAuthenticatedUser(httpRequest, connectionString);
-    if (user is null)
+    var session = await GetAuthenticatedSession(httpRequest, connectionString, requireCsrf: true);
+    if (session is null)
     {
         return Results.Unauthorized();
     }
@@ -338,7 +418,7 @@ app.MapPut("/api/files/{id:long}/rename", async (long id, RenameRequest request,
                           """;
     command.Parameters.AddWithValue("$newFileName", request.NewFileName.Trim());
     command.Parameters.AddWithValue("$fileId", id);
-    command.Parameters.AddWithValue("$ownerId", user.Id);
+    command.Parameters.AddWithValue("$ownerId", session.User.Id);
 
     var updated = await command.ExecuteNonQueryAsync();
     return updated == 0
@@ -348,8 +428,8 @@ app.MapPut("/api/files/{id:long}/rename", async (long id, RenameRequest request,
 
 app.MapPost("/api/files/{id:long}/share", async (long id, HttpRequest httpRequest) =>
 {
-    var user = await GetAuthenticatedUser(httpRequest, connectionString);
-    if (user is null)
+    var session = await GetAuthenticatedSession(httpRequest, connectionString, requireCsrf: true);
+    if (session is null)
     {
         return Results.Unauthorized();
     }
@@ -365,15 +445,19 @@ app.MapPost("/api/files/{id:long}/share", async (long id, HttpRequest httpReques
                                 LIMIT 1;
                                 """;
     selectCommand.Parameters.AddWithValue("$fileId", id);
-    selectCommand.Parameters.AddWithValue("$ownerId", user.Id);
+    selectCommand.Parameters.AddWithValue("$ownerId", session.User.Id);
 
-    await using var shareReader = await selectCommand.ExecuteReaderAsync();
-    if (!await shareReader.ReadAsync())
+    string? existingToken;
+    await using (var shareReader = await selectCommand.ExecuteReaderAsync())
     {
-        return Results.NotFound(new { error = "Файл не найден." });
+        if (!await shareReader.ReadAsync())
+        {
+            return Results.NotFound(new { error = "Файл не найден." });
+        }
+
+        existingToken = shareReader.IsDBNull(0) ? null : shareReader.GetString(0);
     }
 
-    var existingToken = shareReader.IsDBNull(0) ? null : shareReader.GetString(0);
     if (string.IsNullOrWhiteSpace(existingToken))
     {
         existingToken = GenerateToken();
@@ -385,7 +469,7 @@ app.MapPost("/api/files/{id:long}/share", async (long id, HttpRequest httpReques
                                     """;
         updateCommand.Parameters.AddWithValue("$shareToken", existingToken);
         updateCommand.Parameters.AddWithValue("$fileId", id);
-        updateCommand.Parameters.AddWithValue("$ownerId", user.Id);
+        updateCommand.Parameters.AddWithValue("$ownerId", session.User.Id);
         await updateCommand.ExecuteNonQueryAsync();
     }
 
@@ -398,8 +482,8 @@ app.MapPost("/api/files/{id:long}/share", async (long id, HttpRequest httpReques
 
 app.MapDelete("/api/files/{id:long}/share", async (long id, HttpRequest httpRequest) =>
 {
-    var user = await GetAuthenticatedUser(httpRequest, connectionString);
-    if (user is null)
+    var session = await GetAuthenticatedSession(httpRequest, connectionString, requireCsrf: true);
+    if (session is null)
     {
         return Results.Unauthorized();
     }
@@ -414,7 +498,7 @@ app.MapDelete("/api/files/{id:long}/share", async (long id, HttpRequest httpRequ
                           WHERE id = $fileId AND owner_id = $ownerId;
                           """;
     command.Parameters.AddWithValue("$fileId", id);
-    command.Parameters.AddWithValue("$ownerId", user.Id);
+    command.Parameters.AddWithValue("$ownerId", session.User.Id);
 
     var updated = await command.ExecuteNonQueryAsync();
     return updated == 0
@@ -436,17 +520,24 @@ app.MapGet("/api/share/{token}", async (string token, HttpRequest httpRequest) =
                           """;
     command.Parameters.AddWithValue("$token", token);
 
-    await using var reader = await command.ExecuteReaderAsync();
-    if (!await reader.ReadAsync())
+    long fileId;
+    long ownerId;
+    string originalName;
+    string storedName;
+    string contentType;
+    await using (var reader = await command.ExecuteReaderAsync())
     {
-        return Results.NotFound(new { error = "Ссылка не найдена." });
-    }
+        if (!await reader.ReadAsync())
+        {
+            return Results.NotFound(new { error = "Ссылка не найдена." });
+        }
 
-    var fileId = reader.GetInt64(0);
-    var ownerId = reader.GetInt64(1);
-    var originalName = reader.GetString(2);
-    var storedName = reader.GetString(3);
-    var contentType = reader.GetString(4);
+        fileId = reader.GetInt64(0);
+        ownerId = reader.GetInt64(1);
+        originalName = reader.GetString(2);
+        storedName = reader.GetString(3);
+        contentType = reader.GetString(4);
+    }
 
     var whitelistCountCommand = connection.CreateCommand();
     whitelistCountCommand.CommandText = "SELECT COUNT(1) FROM file_whitelist WHERE file_id = $fileId;";
@@ -455,8 +546,8 @@ app.MapGet("/api/share/{token}", async (string token, HttpRequest httpRequest) =
 
     if (whitelistCount > 0)
     {
-        var user = await GetAuthenticatedUser(httpRequest, connectionString);
-        if (user is null)
+        var session = await GetAuthenticatedSession(httpRequest, connectionString);
+        if (session is null)
         {
             return Results.Unauthorized();
         }
@@ -468,9 +559,9 @@ app.MapGet("/api/share/{token}", async (string token, HttpRequest httpRequest) =
                                    WHERE file_id = $fileId AND user_id = $userId;
                                    """;
         allowCommand.Parameters.AddWithValue("$fileId", fileId);
-        allowCommand.Parameters.AddWithValue("$userId", user.Id);
+        allowCommand.Parameters.AddWithValue("$userId", session.User.Id);
 
-        var allowed = Convert.ToInt32(await allowCommand.ExecuteScalarAsync() ?? 0) > 0 || user.Id == ownerId;
+        var allowed = Convert.ToInt32(await allowCommand.ExecuteScalarAsync() ?? 0) > 0 || session.User.Id == ownerId;
         if (!allowed)
         {
             return Results.StatusCode(StatusCodes.Status403Forbidden);
@@ -489,8 +580,8 @@ app.MapGet("/api/share/{token}", async (string token, HttpRequest httpRequest) =
 
 app.MapPost("/api/files/{id:long}/whitelist", async (long id, WhitelistRequest request, HttpRequest httpRequest) =>
 {
-    var owner = await GetAuthenticatedUser(httpRequest, connectionString);
-    if (owner is null)
+    var ownerSession = await GetAuthenticatedSession(httpRequest, connectionString, requireCsrf: true);
+    if (ownerSession is null)
     {
         return Results.Unauthorized();
     }
@@ -506,7 +597,7 @@ app.MapPost("/api/files/{id:long}/whitelist", async (long id, WhitelistRequest r
     var fileExists = connection.CreateCommand();
     fileExists.CommandText = "SELECT COUNT(1) FROM files WHERE id = $fileId AND owner_id = $ownerId;";
     fileExists.Parameters.AddWithValue("$fileId", id);
-    fileExists.Parameters.AddWithValue("$ownerId", owner.Id);
+    fileExists.Parameters.AddWithValue("$ownerId", ownerSession.User.Id);
     if (Convert.ToInt32(await fileExists.ExecuteScalarAsync() ?? 0) == 0)
     {
         return Results.NotFound(new { error = "Файл не найден." });
@@ -537,8 +628,8 @@ app.MapPost("/api/files/{id:long}/whitelist", async (long id, WhitelistRequest r
 
 app.MapDelete("/api/files/{id:long}/whitelist/{username}", async (long id, string username, HttpRequest httpRequest) =>
 {
-    var owner = await GetAuthenticatedUser(httpRequest, connectionString);
-    if (owner is null)
+    var ownerSession = await GetAuthenticatedSession(httpRequest, connectionString, requireCsrf: true);
+    if (ownerSession is null)
     {
         return Results.Unauthorized();
     }
@@ -549,7 +640,7 @@ app.MapDelete("/api/files/{id:long}/whitelist/{username}", async (long id, strin
     var fileExists = connection.CreateCommand();
     fileExists.CommandText = "SELECT COUNT(1) FROM files WHERE id = $fileId AND owner_id = $ownerId;";
     fileExists.Parameters.AddWithValue("$fileId", id);
-    fileExists.Parameters.AddWithValue("$ownerId", owner.Id);
+    fileExists.Parameters.AddWithValue("$ownerId", ownerSession.User.Id);
     if (Convert.ToInt32(await fileExists.ExecuteScalarAsync() ?? 0) == 0)
     {
         return Results.NotFound(new { error = "Файл не найден." });
@@ -578,8 +669,8 @@ app.MapDelete("/api/files/{id:long}/whitelist/{username}", async (long id, strin
 
 app.MapGet("/api/files/{id:long}/whitelist", async (long id, HttpRequest httpRequest) =>
 {
-    var owner = await GetAuthenticatedUser(httpRequest, connectionString);
-    if (owner is null)
+    var ownerSession = await GetAuthenticatedSession(httpRequest, connectionString);
+    if (ownerSession is null)
     {
         return Results.Unauthorized();
     }
@@ -590,7 +681,7 @@ app.MapGet("/api/files/{id:long}/whitelist", async (long id, HttpRequest httpReq
     var fileExists = connection.CreateCommand();
     fileExists.CommandText = "SELECT COUNT(1) FROM files WHERE id = $fileId AND owner_id = $ownerId;";
     fileExists.Parameters.AddWithValue("$fileId", id);
-    fileExists.Parameters.AddWithValue("$ownerId", owner.Id);
+    fileExists.Parameters.AddWithValue("$ownerId", ownerSession.User.Id);
     if (Convert.ToInt32(await fileExists.ExecuteScalarAsync() ?? 0) == 0)
     {
         return Results.NotFound(new { error = "Файл не найден." });
@@ -636,6 +727,7 @@ static void InitializeDatabase(string connectionString)
                               token TEXT PRIMARY KEY,
                               user_id INTEGER NOT NULL,
                               expires_at TEXT NOT NULL,
+                              csrf_token TEXT NOT NULL DEFAULT '',
                               FOREIGN KEY (user_id) REFERENCES users(id)
                           );
 
@@ -660,19 +752,39 @@ static void InitializeDatabase(string connectionString)
                           );
                           """;
     command.ExecuteNonQuery();
+
+    EnsureColumnExists(connection, "user_sessions", "csrf_token", "TEXT NOT NULL DEFAULT ''");
 }
 
-static async Task<UserInfo?> GetAuthenticatedUser(HttpRequest request, string connectionString)
+static void EnsureColumnExists(SqliteConnection connection, string tableName, string columnName, string columnDefinition)
 {
-    var tokenHeader = request.Headers.Authorization.ToString();
-    var token = tokenHeader.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase)
-        ? tokenHeader["Bearer ".Length..].Trim()
-        : string.Empty;
+    using var pragmaCommand = connection.CreateCommand();
+    pragmaCommand.CommandText = $"PRAGMA table_info({tableName});";
+    using var reader = pragmaCommand.ExecuteReader();
+    while (reader.Read())
+    {
+        var existingColumnName = reader.GetString(1);
+        if (string.Equals(existingColumnName, columnName, StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+    }
+
+    using var alterCommand = connection.CreateCommand();
+    alterCommand.CommandText = $"ALTER TABLE {tableName} ADD COLUMN {columnName} {columnDefinition};";
+    alterCommand.ExecuteNonQuery();
+}
+
+static async Task<SessionInfo?> GetAuthenticatedSession(HttpRequest request, string connectionString, bool requireCsrf = false)
+{
+    var token = request.Cookies["fs_token"]?.Trim() ?? string.Empty;
     if (string.IsNullOrWhiteSpace(token))
     {
-        token = request.Cookies["fs_token"]?.Trim() ?? string.Empty;
+        return null;
     }
-    if (string.IsNullOrWhiteSpace(token))
+
+    var csrfTokenHeader = request.Headers["X-CSRF-Token"].ToString().Trim();
+    if (requireCsrf && string.IsNullOrWhiteSpace(csrfTokenHeader))
     {
         return null;
     }
@@ -682,7 +794,7 @@ static async Task<UserInfo?> GetAuthenticatedUser(HttpRequest request, string co
 
     var command = connection.CreateCommand();
     command.CommandText = """
-                          SELECT u.id, u.username
+                          SELECT s.token, u.id, u.username, s.csrf_token
                           FROM user_sessions s
                           INNER JOIN users u ON u.id = s.user_id
                           WHERE s.token = $token
@@ -692,13 +804,52 @@ static async Task<UserInfo?> GetAuthenticatedUser(HttpRequest request, string co
     command.Parameters.AddWithValue("$token", token);
     command.Parameters.AddWithValue("$now", DateTime.UtcNow.ToString("O"));
 
-    await using var reader = await command.ExecuteReaderAsync();
-    if (!await reader.ReadAsync())
+    string sessionToken;
+    UserInfo userInfo;
+    string csrfToken;
+    await using (var reader = await command.ExecuteReaderAsync())
     {
-        return null;
+        if (!await reader.ReadAsync())
+        {
+            return null;
+        }
+
+        sessionToken = reader.GetString(0);
+        userInfo = new UserInfo(reader.GetInt64(1), reader.GetString(2));
+        csrfToken = reader.IsDBNull(3) ? string.Empty : reader.GetString(3);
     }
 
-    return new UserInfo(reader.GetInt64(0), reader.GetString(1));
+    if (string.IsNullOrWhiteSpace(csrfToken))
+    {
+        csrfToken = GenerateToken();
+        var updateCsrfCommand = connection.CreateCommand();
+        updateCsrfCommand.CommandText = """
+                                        UPDATE user_sessions
+                                        SET csrf_token = $csrfToken
+                                        WHERE token = $token;
+                                        """;
+        updateCsrfCommand.Parameters.AddWithValue("$csrfToken", csrfToken);
+        updateCsrfCommand.Parameters.AddWithValue("$token", sessionToken);
+        await updateCsrfCommand.ExecuteNonQueryAsync();
+    }
+
+    var session = new SessionInfo(sessionToken, userInfo, csrfToken);
+
+    if (requireCsrf)
+    {
+        var expected = Encoding.UTF8.GetBytes(session.CsrfToken);
+        var provided = Encoding.UTF8.GetBytes(csrfTokenHeader);
+        if (expected.Length != provided.Length)
+        {
+            return null;
+        }
+        if (!CryptographicOperations.FixedTimeEquals(expected, provided))
+        {
+            return null;
+        }
+    }
+
+    return session;
 }
 
 static async Task<FileInfoRow?> GetFileOwnedByUser(string connectionString, long fileId, long ownerId)
@@ -732,8 +883,55 @@ static async Task<FileInfoRow?> GetFileOwnedByUser(string connectionString, long
 
 static string HashPassword(string password)
 {
-    var hashBytes = SHA256.HashData(Encoding.UTF8.GetBytes(password));
-    return Convert.ToHexString(hashBytes);
+    const int iterations = 120_000;
+    var salt = RandomNumberGenerator.GetBytes(16);
+    var hash = Rfc2898DeriveBytes.Pbkdf2(
+        password,
+        salt,
+        iterations,
+        HashAlgorithmName.SHA256,
+        32);
+    return $"PBKDF2${iterations}${Convert.ToBase64String(salt)}${Convert.ToBase64String(hash)}";
+}
+
+static bool VerifyPassword(string password, string storedHash)
+{
+    if (storedHash.StartsWith("PBKDF2$", StringComparison.Ordinal))
+    {
+        var parts = storedHash.Split('$', StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length != 4 || !int.TryParse(parts[1], out var iterations))
+        {
+            return false;
+        }
+
+        byte[] salt;
+        byte[] expectedHash;
+        try
+        {
+            salt = Convert.FromBase64String(parts[2]);
+            expectedHash = Convert.FromBase64String(parts[3]);
+        }
+        catch
+        {
+            return false;
+        }
+
+        var providedHash = Rfc2898DeriveBytes.Pbkdf2(
+            password,
+            salt,
+            iterations,
+            HashAlgorithmName.SHA256,
+            expectedHash.Length);
+        return CryptographicOperations.FixedTimeEquals(providedHash, expectedHash);
+    }
+
+    var legacyHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(password)));
+    return string.Equals(legacyHash, storedHash, StringComparison.Ordinal);
+}
+
+static bool IsLegacySha256Hash(string storedHash)
+{
+    return !storedHash.StartsWith("PBKDF2$", StringComparison.Ordinal);
 }
 
 static string GenerateToken()
@@ -747,4 +945,5 @@ record AuthRequest(string Username, string Password);
 record RenameRequest(string NewFileName);
 record WhitelistRequest(string Username);
 record UserInfo(long Id, string Username);
+record SessionInfo(string SessionToken, UserInfo User, string CsrfToken);
 record FileInfoRow(long Id, long OwnerId, string OriginalName, string StoredName, string ContentType);

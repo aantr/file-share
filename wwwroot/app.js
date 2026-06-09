@@ -1,5 +1,5 @@
 const state = {
-  token: localStorage.getItem("fs_token") || "",
+  csrfToken: sessionStorage.getItem("fs_csrf") || "",
   user: null
 };
 
@@ -47,16 +47,19 @@ function writeLog(message, isError = false) {
   }
 }
 
-function authHeaders() {
+function csrfHeaders() {
   const headers = {};
-  if (state.token) {
-    headers.Authorization = `Bearer ${state.token}`;
+  if (state.csrfToken) {
+    headers["X-CSRF-Token"] = state.csrfToken;
   }
   return headers;
 }
 
 async function requestJson(url, options = {}) {
-  const response = await fetch(url, options);
+  const response = await fetch(url, {
+    credentials: "same-origin",
+    ...options
+  });
   let payload = null;
   try {
     payload = await response.json();
@@ -71,41 +74,34 @@ async function requestJson(url, options = {}) {
   return payload;
 }
 
-function setToken(token) {
-  state.token = token || "";
-  if (state.token) {
-    localStorage.setItem("fs_token", state.token);
+function setCsrfToken(token) {
+  state.csrfToken = token || "";
+  if (state.csrfToken) {
+    sessionStorage.setItem("fs_csrf", state.csrfToken);
   } else {
-    localStorage.removeItem("fs_token");
+    sessionStorage.removeItem("fs_csrf");
   }
 }
 
 function setAuthInfo() {
   if (state.user) {
     el.authInfo.textContent = `Авторизован: ${state.user.username}`;
-  } else if (state.token) {
-    el.authInfo.textContent = "Токен сохранен, проверка...";
   } else {
     el.authInfo.textContent = "Не авторизован";
   }
 }
 
 async function fetchMe() {
-  if (!state.token) {
-    state.user = null;
-    setAuthInfo();
-    return;
-  }
-
   try {
     const data = await requestJson("/api/auth/me", {
-      headers: authHeaders()
+      method: "GET"
     });
-    state.user = { id: data.id ?? data.user?.id, username: data.username ?? data.user?.username };
+    state.user = { id: data.id, username: data.username };
+    setCsrfToken(data.csrfToken || "");
     setAuthInfo();
   } catch {
     state.user = null;
-    setToken("");
+    setCsrfToken("");
     setAuthInfo();
   }
 }
@@ -140,7 +136,7 @@ async function login() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ username, password })
     });
-    setToken(data.token);
+    setCsrfToken(data.csrfToken || "");
     state.user = data.user;
     setAuthInfo();
     writeLog(`Вход выполнен: ${state.user.username}`);
@@ -150,23 +146,20 @@ async function login() {
   }
 }
 
-function logout() {
-  (async () => {
-    try {
-      await requestJson("/api/auth/logout", {
-        method: "POST",
-        headers: authHeaders()
-      });
-    } catch {
-      // Ignore logout API errors, local state still cleared.
-    } finally {
-      state.user = null;
-      setToken("");
-      setAuthInfo();
-      el.filesContainer.innerHTML = "";
-      writeLog("Выход выполнен.");
-    }
-  })();
+async function logout() {
+  try {
+    await requestJson("/api/auth/logout", {
+      method: "POST",
+      headers: csrfHeaders()
+    });
+    state.user = null;
+    setCsrfToken("");
+    setAuthInfo();
+    el.filesContainer.innerHTML = "";
+    writeLog("Выход выполнен.");
+  } catch (error) {
+    writeLog(error.message || "Не удалось выполнить выход.", true);
+  }
 }
 
 async function uploadFile() {
@@ -182,7 +175,8 @@ async function uploadFile() {
 
     const response = await fetch("/api/files/upload", {
       method: "POST",
-      headers: authHeaders(),
+      credentials: "same-origin",
+      headers: csrfHeaders(),
       body: formData
     });
     const payload = await response.json();
@@ -230,7 +224,7 @@ function fileNameFromDisposition(disposition) {
 
 async function downloadUrl(url, fallbackFileName) {
   const response = await fetch(url, {
-    headers: authHeaders()
+    credentials: "same-origin"
   });
 
   if (!response.ok) {
@@ -261,7 +255,7 @@ async function downloadUrl(url, fallbackFileName) {
 async function loadWhitelist(fileId, container) {
   try {
     const users = await requestJson(`/api/files/${fileId}/whitelist`, {
-      headers: authHeaders()
+      method: "GET"
     });
 
     container.innerHTML = "";
@@ -282,7 +276,7 @@ async function loadWhitelist(fileId, container) {
         try {
           await requestJson(`/api/files/${fileId}/whitelist/${encodeURIComponent(username)}`, {
             method: "DELETE",
-            headers: authHeaders()
+            headers: csrfHeaders()
           });
           writeLog(`Пользователь ${username} удален из whitelist.`);
           await loadWhitelist(fileId, container);
@@ -327,7 +321,7 @@ function renderFiles(files) {
       try {
         await requestJson(`/api/files/${file.id}`, {
           method: "DELETE",
-          headers: authHeaders()
+          headers: csrfHeaders()
         });
         writeLog(`Файл удален: ${file.name}`);
         await loadFiles();
@@ -349,7 +343,7 @@ function renderFiles(files) {
         await requestJson(`/api/files/${file.id}/rename`, {
           method: "PUT",
           headers: {
-            ...authHeaders(),
+            ...csrfHeaders(),
             "Content-Type": "application/json"
           },
           body: JSON.stringify({ newFileName })
@@ -365,7 +359,7 @@ function renderFiles(files) {
       try {
         const data = await requestJson(`/api/files/${file.id}/share`, {
           method: "POST",
-          headers: authHeaders()
+          headers: csrfHeaders()
         });
         shareUrlInput.value = data.shareUrl || "";
         writeLog("Ссылка создана/получена.");
@@ -378,7 +372,7 @@ function renderFiles(files) {
       try {
         await requestJson(`/api/files/${file.id}/share`, {
           method: "DELETE",
-          headers: authHeaders()
+          headers: csrfHeaders()
         });
         shareUrlInput.value = "";
         writeLog("Ссылка отключена.");
@@ -401,7 +395,7 @@ function renderFiles(files) {
         await requestJson(`/api/files/${file.id}/whitelist`, {
           method: "POST",
           headers: {
-            ...authHeaders(),
+            ...csrfHeaders(),
             "Content-Type": "application/json"
           },
           body: JSON.stringify({ username })
@@ -425,12 +419,12 @@ function renderFiles(files) {
 async function loadFiles() {
   try {
     const files = await requestJson("/api/files", {
-      headers: authHeaders()
+      method: "GET"
     });
     renderFiles(files);
   } catch (error) {
     el.filesContainer.innerHTML = "";
-    if (state.token) {
+    if (state.user) {
       writeLog(error.message, true);
     } else {
       el.filesContainer.textContent = "Авторизуйтесь, чтобы увидеть файлы.";
