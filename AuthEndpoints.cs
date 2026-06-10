@@ -2,9 +2,17 @@ using Microsoft.Data.Sqlite;
 
 public static class AuthEndpoints
 {
+    private static class AuthErrorCodes
+    {
+        public const string AlreadyAuthenticated = "AUTH_ALREADY_AUTHENTICATED";
+        public const string AlreadyLoggedOut = "AUTH_ALREADY_LOGGED_OUT";
+        public const string InvalidCredentials = "AUTH_INVALID_CREDENTIALS";
+        public const string InvalidState = "AUTH_INVALID_STATE";
+    }
+
     public static void Map(WebApplication app, string connectionString)
     {
-        app.MapPost("/api/auth/register", (AuthRequest request) => RegisterAsync(request, connectionString));
+        app.MapPost("/api/auth/register", (AuthRequest request, HttpRequest httpRequest) => RegisterAsync(request, httpRequest, connectionString));
         app.MapPost("/api/auth/login", (AuthRequest request, HttpRequest httpRequest, HttpResponse httpResponse) =>
             LoginAsync(request, httpRequest, httpResponse, connectionString));
         app.MapGet("/api/auth/me", (HttpRequest httpRequest) => MeAsync(httpRequest, connectionString));
@@ -12,8 +20,16 @@ public static class AuthEndpoints
             LogoutAsync(httpRequest, httpResponse, connectionString));
     }
 
-    private static async Task<IResult> RegisterAsync(AuthRequest request, string connectionString)
+    private static async Task<IResult> RegisterAsync(AuthRequest request, HttpRequest httpRequest, string connectionString)
     {
+        if (await SecurityServices.GetAuthenticatedSessionAsync(httpRequest, connectionString) is not null)
+        {
+            return AuthError(
+                AuthErrorCodes.AlreadyAuthenticated,
+                "Вы уже авторизованы. Сначала выйдите, если хотите зарегистрировать нового пользователя.",
+                StatusCodes.Status409Conflict);
+        }
+
         if (string.IsNullOrWhiteSpace(request.Username) || string.IsNullOrWhiteSpace(request.Password))
         {
             return Results.BadRequest(new { error = "Имя пользователя и пароль обязательны." });
@@ -51,6 +67,15 @@ public static class AuthEndpoints
         HttpResponse httpResponse,
         string connectionString)
     {
+        var existingSession = await SecurityServices.GetAuthenticatedSessionAsync(httpRequest, connectionString);
+        if (existingSession is not null)
+        {
+            return AuthError(
+                AuthErrorCodes.AlreadyAuthenticated,
+                $"Вы уже вошли как {existingSession.User.Username}. Сначала выполните выход, чтобы войти под другим пользователем.",
+                StatusCodes.Status409Conflict);
+        }
+
         if (string.IsNullOrWhiteSpace(request.Username) || string.IsNullOrWhiteSpace(request.Password))
         {
             return Results.BadRequest(new { error = "Имя пользователя и пароль обязательны." });
@@ -60,7 +85,10 @@ public static class AuthEndpoints
         var credentials = await GetUserCredentialsByUsernameAsync(connection, request.Username.Trim());
         if (credentials is null || !SecurityServices.VerifyPassword(request.Password, credentials.PasswordHash))
         {
-            return Results.Unauthorized();
+            return AuthError(
+                AuthErrorCodes.InvalidCredentials,
+                "Неверный логин или пароль.",
+                StatusCodes.Status401Unauthorized);
         }
 
         if (SecurityServices.IsLegacySha256Hash(credentials.PasswordHash))
@@ -102,7 +130,10 @@ public static class AuthEndpoints
     {
         var session = await SecurityServices.GetAuthenticatedSessionAsync(httpRequest, connectionString);
         return session is null
-            ? Results.Unauthorized()
+            ? AuthError(
+                AuthErrorCodes.AlreadyLoggedOut,
+                "Вы не авторизованы. Выполните вход.",
+                StatusCodes.Status401Unauthorized)
             : Results.Ok(new
             {
                 id = session.User.Id,
@@ -113,20 +144,37 @@ public static class AuthEndpoints
 
     private static async Task<IResult> LogoutAsync(HttpRequest httpRequest, HttpResponse httpResponse, string connectionString)
     {
-        var session = await SecurityServices.GetAuthenticatedSessionAsync(httpRequest, connectionString, requireCsrf: true);
+        var session = await SecurityServices.GetAuthenticatedSessionAsync(httpRequest, connectionString);
         if (session is null)
         {
-            return Results.Unauthorized();
+            return AuthError(
+                AuthErrorCodes.AlreadyLoggedOut,
+                "Вы уже вышли из системы.",
+                StatusCodes.Status409Conflict);
+        }
+
+        var csrfValidatedSession = await SecurityServices.GetAuthenticatedSessionAsync(httpRequest, connectionString, requireCsrf: true);
+        if (csrfValidatedSession is null)
+        {
+            return AuthError(
+                AuthErrorCodes.InvalidState,
+                "Некорректный или отсутствующий CSRF-токен. Обновите страницу и повторите попытку.",
+                StatusCodes.Status401Unauthorized);
         }
 
         await using var connection = await SqliteDb.OpenConnectionAsync(connectionString);
         var command = connection.CreateCommand();
         command.CommandText = "DELETE FROM user_sessions WHERE token = $token;";
-        command.Parameters.AddWithValue("$token", session.SessionToken);
+        command.Parameters.AddWithValue("$token", csrfValidatedSession.SessionToken);
         await command.ExecuteNonQueryAsync();
 
         httpResponse.Cookies.Delete(AppConstants.SessionCookieName);
         return Results.Ok(new { message = "Вы вышли из системы." });
+    }
+
+    private static IResult AuthError(string code, string message, int statusCode)
+    {
+        return Results.Json(new { code, error = message }, statusCode: statusCode);
     }
 
     private static async Task<UserCredentials?> GetUserCredentialsByUsernameAsync(SqliteConnection connection, string username)

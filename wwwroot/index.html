@@ -68,39 +68,28 @@
   </main>
 
   <template id="fileTemplate">
-    <article class="file-item">
-      <header>
-        <strong class="file-name"></strong>
-        <span class="file-meta"></span>
+    <article class="file-item file-icon-card">
+      <header class="file-card-header">
+        <div class="file-icon">📄</div>
+        <div class="file-main">
+          <strong class="file-name"></strong>
+          <span class="file-meta"></span>
+        </div>
       </header>
 
-      <div class="actions wrap">
-        <button class="download-btn">Скачать</button>
-        <button class="delete-btn danger">Удалить</button>
+      <div class="mini-actions">
+        <button class="mini-btn download-btn" title="Скачать">⬇</button>
+        <button class="mini-btn rename-btn" title="Переименовать">✎</button>
+        <button class="mini-btn create-share-btn" title="Создать ссылку">🔗</button>
+        <button class="mini-btn disable-share-btn" title="Отключить ссылку">🚫</button>
+        <button class="mini-btn copy-link-btn" title="Копировать ссылку">📋</button>
+        <button class="mini-btn add-whitelist-btn" title="Добавить в whitelist">➕WL</button>
+        <button class="mini-btn load-whitelist-btn" title="Показать whitelist">👥WL</button>
+        <button class="mini-btn remove-whitelist-btn" title="Удалить из whitelist">➖WL</button>
+        <button class="mini-btn danger delete-btn" title="Удалить файл">🗑</button>
       </div>
 
-      <div class="rename-row">
-        <input class="rename-input" type="text" placeholder="Новое имя файла">
-        <button class="rename-btn">Переименовать</button>
-      </div>
-
-      <div class="share-row">
-        <button class="create-share-btn">Создать/получить ссылку</button>
-        <button class="disable-share-btn secondary">Отключить ссылку</button>
-      </div>
-
-      <label>
-        Ссылка
-        <input class="share-url" type="text" readonly>
-      </label>
-
-      <div class="whitelist-row">
-        <input class="whitelist-user-input" type="text" placeholder="Логин пользователя">
-        <button class="add-whitelist-btn">Добавить в белый список</button>
-        <button class="load-whitelist-btn secondary">Показать whitelist</button>
-      </div>
-
-      <div class="whitelist-list"></div>
+      <input class="share-url compact-link" type="text" readonly placeholder="Ссылка появится после создания">
     </article>
   </template>
 

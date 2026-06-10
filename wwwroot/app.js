@@ -104,10 +104,38 @@ async function requestJson(url, options = {}) {
   }
 
   if (!response.ok) {
-    const message = payload?.error || payload?.message || `HTTP ${response.status}`;
+    const message = getFriendlyApiErrorMessage(url, response.status, payload);
     throw new Error(message);
   }
   return payload;
+}
+
+function getFriendlyApiErrorMessage(url, status, payload) {
+  const serverMessage = payload?.error || payload?.message;
+  if (serverMessage) {
+    return serverMessage;
+  }
+
+  if (status === 401) {
+    if (url.includes("/api/auth/login")) {
+      return "Неверный логин или пароль. Проверьте данные и попробуйте снова.";
+    }
+    return "Сессия истекла или вы не авторизованы. Войдите снова.";
+  }
+
+  if (status === 403) {
+    return "Доступ запрещен. У вас нет прав для этого действия.";
+  }
+
+  if (status === 404) {
+    return "Ресурс не найден. Возможно, он уже удален.";
+  }
+
+  if (status >= 500) {
+    return "Ошибка сервера. Попробуйте еще раз через несколько секунд.";
+  }
+
+  return `Ошибка запроса (HTTP ${status}).`;
 }
 
 function setCsrfToken(token) {
@@ -301,45 +329,10 @@ async function downloadUrl(url, fallbackFileName) {
   URL.revokeObjectURL(objectUrl);
 }
 
-async function loadWhitelist(fileId, container) {
-  try {
-    const users = await requestJson(`/api/files/${fileId}/whitelist`, {
-      method: "GET"
-    });
-
-    container.innerHTML = "";
-    if (!Array.isArray(users) || users.length === 0) {
-      container.textContent = "Белый список пуст.";
-      return;
-    }
-
-    for (const username of users) {
-      const pill = document.createElement("span");
-      pill.className = "pill";
-      pill.textContent = username;
-
-      const removeBtn = document.createElement("button");
-      removeBtn.textContent = "x";
-      removeBtn.title = "Удалить из whitelist";
-      removeBtn.addEventListener("click", async () => {
-        try {
-          await requestJson(`/api/files/${fileId}/whitelist/${encodeURIComponent(username)}`, {
-            method: "DELETE",
-            headers: csrfHeaders()
-          });
-        notifySuccess(`Пользователь ${username} удален из whitelist.`);
-          await loadWhitelist(fileId, container);
-        } catch (error) {
-          writeLog(error.message, true);
-        }
-      });
-
-      pill.appendChild(removeBtn);
-      container.appendChild(pill);
-    }
-  } catch (error) {
-    writeLog(error.message, true);
-  }
+async function getWhitelist(fileId) {
+  return await requestJson(`/api/files/${fileId}/whitelist`, {
+    method: "GET"
+  });
 }
 
 function renderFiles(files) {
@@ -367,6 +360,10 @@ function renderFiles(files) {
     });
 
     node.querySelector(".delete-btn").addEventListener("click", async () => {
+      if (!confirm(`Удалить файл "${file.name}"?`)) {
+        return;
+      }
+
       try {
         await requestJson(`/api/files/${file.id}`, {
           method: "DELETE",
@@ -379,10 +376,8 @@ function renderFiles(files) {
       }
     });
 
-    const renameInput = node.querySelector(".rename-input");
-    renameInput.value = file.name;
     node.querySelector(".rename-btn").addEventListener("click", async () => {
-      const newFileName = renameInput.value.trim();
+      const newFileName = prompt("Введите новое имя файла:", file.name)?.trim() || "";
       if (!newFileName) {
         writeLog("Новое имя не может быть пустым.", true);
         return;
@@ -412,12 +407,17 @@ function renderFiles(files) {
         });
         shareUrlInput.value = data.shareUrl || "";
         notifySuccess("Ссылка создана/получена.");
+        alert(`Ссылка на файл:\n${shareUrlInput.value}`);
       } catch (error) {
         writeLog(error.message, true);
       }
     });
 
     node.querySelector(".disable-share-btn").addEventListener("click", async () => {
+      if (!confirm("Отключить ссылку на этот файл?")) {
+        return;
+      }
+
       try {
         await requestJson(`/api/files/${file.id}/share`, {
           method: "DELETE",
@@ -430,11 +430,8 @@ function renderFiles(files) {
       }
     });
 
-    const whitelistUserInput = node.querySelector(".whitelist-user-input");
-    const whitelistList = node.querySelector(".whitelist-list");
-
     node.querySelector(".add-whitelist-btn").addEventListener("click", async () => {
-      const username = whitelistUserInput.value.trim();
+      const username = prompt("Введите логин пользователя для whitelist:")?.trim() || "";
       if (!username) {
         writeLog("Введите логин для whitelist.", true);
         return;
@@ -450,15 +447,54 @@ function renderFiles(files) {
           body: JSON.stringify({ username })
         });
         notifySuccess(`Пользователь ${username} добавлен в whitelist.`);
-        whitelistUserInput.value = "";
-        await loadWhitelist(file.id, whitelistList);
       } catch (error) {
         writeLog(error.message, true);
       }
     });
 
+    node.querySelector(".copy-link-btn").addEventListener("click", async () => {
+      if (!shareUrlInput.value) {
+        writeLog("Ссылка еще не создана.", true);
+        return;
+      }
+
+      try {
+        await navigator.clipboard.writeText(shareUrlInput.value);
+        notifySuccess("Ссылка скопирована в буфер.");
+      } catch {
+        writeLog("Не удалось скопировать ссылку.", true);
+      }
+    });
+
     node.querySelector(".load-whitelist-btn").addEventListener("click", async () => {
-      await loadWhitelist(file.id, whitelistList);
+      try {
+        const users = await getWhitelist(file.id);
+        if (!Array.isArray(users) || users.length === 0) {
+          alert("Белый список пуст.");
+          return;
+        }
+        alert(`Whitelist:\n- ${users.join("\n- ")}`);
+      } catch (error) {
+        writeLog(error.message, true);
+      }
+    });
+
+    node.querySelector(".remove-whitelist-btn").addEventListener("click", async () => {
+      const username = prompt("Введите логин пользователя, которого нужно удалить из whitelist:")?.trim() || "";
+      if (!username) {
+        writeLog("Логин не введен.", true);
+        return;
+      }
+
+      try {
+        await requestJson(`/api/files/${file.id}/whitelist/${encodeURIComponent(username)}`, {
+          method: "DELETE",
+          headers: csrfHeaders()
+        });
+        notifySuccess(`Пользователь ${username} удален из whitelist.`);
+      } catch (error) {
+        writeLog(error.message, true);
+      }
     });
 
     el.filesContainer.appendChild(node);
