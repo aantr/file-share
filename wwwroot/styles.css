@@ -78,6 +78,29 @@ h1, h2 {
   display: block;
 }
 
+.subtab-bar {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+
+.subtab-btn {
+  background: #374151;
+}
+
+.subtab-btn.active {
+  background: #2563eb;
+}
+
+.subtab-panel {
+  display: none;
+}
+
+.subtab-panel.active {
+  display: block;
+}
+
 .grid.two {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));

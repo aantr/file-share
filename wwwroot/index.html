@@ -21,25 +21,48 @@
 
     <section id="accountTab" class="card tab-panel active">
       <h2>Пользователь</h2>
-      <div class="grid two">
-        <label>
-          Логин
-          <input id="username" type="text" placeholder="user1">
-        </label>
-        <label>
-          Email
-          <input id="email" type="email" placeholder="user@example.com">
-        </label>
-        <label>
-          Пароль
-          <input id="password" type="password" placeholder="password">
-        </label>
+      <div class="subtab-bar">
+        <button class="subtab-btn active" data-subtab-target="loginSubtab">Вход</button>
+        <button class="subtab-btn" data-subtab-target="registerSubtab">Регистрация</button>
       </div>
-      <div class="actions">
-        <button id="registerBtn">Регистрация</button>
-        <button id="loginBtn">Войти</button>
-        <button id="logoutBtn" class="secondary">Выйти</button>
+
+      <div id="loginSubtab" class="subtab-panel active">
+        <div class="grid two">
+          <label>
+            Логин
+            <input id="loginUsername" type="text" placeholder="user1">
+          </label>
+          <label>
+            Пароль
+            <input id="loginPassword" type="password" placeholder="password">
+          </label>
+        </div>
+        <div class="actions">
+          <button id="loginBtn">Войти</button>
+          <button id="logoutBtn" class="secondary">Выйти</button>
+        </div>
       </div>
+
+      <div id="registerSubtab" class="subtab-panel">
+        <div class="grid two">
+          <label>
+            Логин
+            <input id="registerUsername" type="text" placeholder="new_user">
+          </label>
+          <label>
+            Email
+            <input id="registerEmail" type="email" placeholder="user@example.com">
+          </label>
+          <label>
+            Пароль
+            <input id="registerPassword" type="password" placeholder="password">
+          </label>
+        </div>
+        <div class="actions">
+          <button id="registerBtn">Зарегистрироваться</button>
+        </div>
+      </div>
+
       <p id="authInfo" class="muted">Не авторизован</p>
 
       <hr>

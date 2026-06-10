@@ -1,13 +1,16 @@
 const state = {
   csrfToken: sessionStorage.getItem("fs_csrf") || "",
-  user: null
+  user: null,
+  lastKnownEmail: ""
 };
 const MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
 
 const el = {
-  username: document.getElementById("username"),
-  email: document.getElementById("email"),
-  password: document.getElementById("password"),
+  loginUsername: document.getElementById("loginUsername"),
+  loginPassword: document.getElementById("loginPassword"),
+  registerUsername: document.getElementById("registerUsername"),
+  registerEmail: document.getElementById("registerEmail"),
+  registerPassword: document.getElementById("registerPassword"),
   currentPassword: document.getElementById("currentPassword"),
   newPassword: document.getElementById("newPassword"),
   recoveryEmail: document.getElementById("recoveryEmail"),
@@ -28,6 +31,8 @@ const el = {
   downloadByShareBtn: document.getElementById("downloadByShareBtn"),
   tabButtons: document.querySelectorAll(".tab-btn"),
   tabPanels: document.querySelectorAll(".tab-panel"),
+  subtabButtons: document.querySelectorAll(".subtab-btn"),
+  subtabPanels: document.querySelectorAll(".subtab-panel"),
   messageBox: document.getElementById("messageBox"),
   log: document.getElementById("log"),
   fileTemplate: document.getElementById("fileTemplate")
@@ -87,6 +92,25 @@ function setupTabs() {
 
       for (const tabButton of el.tabButtons) {
         tabButton.classList.toggle("active", tabButton === button);
+      }
+    });
+  }
+}
+
+function setupAccountSubtabs() {
+  if (!el.subtabButtons.length || !el.subtabPanels.length) return;
+
+  for (const button of el.subtabButtons) {
+    button.addEventListener("click", () => {
+      const targetId = button.dataset.subtabTarget;
+      if (!targetId) return;
+
+      for (const panel of el.subtabPanels) {
+        panel.classList.toggle("active", panel.id === targetId);
+      }
+
+      for (const subtabButton of el.subtabButtons) {
+        subtabButton.classList.toggle("active", subtabButton === button);
       }
     });
   }
@@ -178,10 +202,11 @@ async function fetchMe() {
       method: "GET"
     });
     state.user = { id: data.id, username: data.username, email: data.email || "" };
+    state.lastKnownEmail = data.email || state.lastKnownEmail;
     setCsrfToken(data.csrfToken || "");
     if (data.email) {
-      el.email.value = data.email;
       el.recoveryEmail.value = data.email;
+      el.registerEmail.value = data.email;
     }
     setAuthInfo();
   } catch {
@@ -192,9 +217,9 @@ async function fetchMe() {
 }
 
 async function register() {
-  const username = el.username.value.trim();
-  const email = el.email.value.trim();
-  const password = el.password.value;
+  const username = el.registerUsername.value.trim();
+  const email = el.registerEmail.value.trim();
+  const password = el.registerPassword.value;
   if (!username || !email || !password) {
     writeLog("Введите логин, email и пароль.", true);
     return;
@@ -211,14 +236,16 @@ async function register() {
       body: JSON.stringify({ username, email, password })
     });
     notifySuccess(`Пользователь ${username} зарегистрирован.`);
+    el.loginUsername.value = username;
+    el.loginPassword.value = "";
   } catch (error) {
     writeLog(error.message, true);
   }
 }
 
 async function login() {
-  const username = el.username.value.trim();
-  const password = el.password.value;
+  const username = el.loginUsername.value.trim();
+  const password = el.loginPassword.value;
 
   try {
     const data = await requestJson("/api/auth/login", {
@@ -229,8 +256,9 @@ async function login() {
     setCsrfToken(data.csrfToken || "");
     state.user = data.user;
     if (state.user?.email) {
-      el.email.value = state.user.email;
+      state.lastKnownEmail = state.user.email;
       el.recoveryEmail.value = state.user.email;
+      el.registerEmail.value = state.user.email;
     }
     setAuthInfo();
     notifySuccess(`Вход выполнен: ${state.user.username}`);
@@ -283,7 +311,7 @@ async function changePassword() {
 }
 
 async function forgotPassword() {
-  const email = (el.recoveryEmail.value || el.email.value || "").trim();
+  const email = (el.recoveryEmail.value || state.lastKnownEmail || el.registerEmail.value || "").trim();
   if (!email) {
     writeLog("Введите email для восстановления.", true);
     return;
@@ -312,7 +340,7 @@ async function forgotPassword() {
 }
 
 async function resetPassword() {
-  const email = (el.recoveryEmail.value || el.email.value || "").trim();
+  const email = (el.recoveryEmail.value || state.lastKnownEmail || el.registerEmail.value || "").trim();
   const resetToken = el.resetToken.value.trim();
   const newPassword = el.resetNewPassword.value;
 
@@ -658,6 +686,7 @@ el.downloadByShareBtn.addEventListener("click", downloadByShare);
 
 (async () => {
   setupTabs();
+  setupAccountSubtabs();
   setAuthInfo();
   await fetchMe();
   await loadFiles();
