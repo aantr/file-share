@@ -94,6 +94,42 @@ dotnet test FileShareExpert.Tests/FileShareExpert.Tests.csproj
 
 Покрыты основные сценарии: регистрация/логин, `me`, upload/list/download/rename/delete, share, whitelist и проверка CSRF.
 
+## Деплой в Heroku (Container Registry)
+
+1. Установите и авторизуйте Heroku CLI:
+
+```bash
+heroku login
+heroku container:login
+```
+
+2. Создайте приложение (или используйте существующее):
+
+```bash
+heroku create <your-app-name>
+```
+
+3. Из корня проекта выполните деплой:
+
+```bash
+heroku container:push web -a <your-app-name>
+heroku container:release web -a <your-app-name>
+```
+
+4. Откройте приложение:
+
+```bash
+heroku open -a <your-app-name>
+```
+
+5. (Опционально) посмотреть логи:
+
+```bash
+heroku logs --tail -a <your-app-name>
+```
+
+Важно: в Heroku файловая система эфемерная, поэтому SQLite (`storage/fileshare.db`) и загруженные файлы будут теряться при рестарте/пересоздании dyno. Для продакшена используйте внешний storage (например, S3/Cloudinary) и внешнюю БД.
+
 ## Где хранятся данные
 
 - База SQLite: `storage/fileshare.db`

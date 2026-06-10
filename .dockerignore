@@ -1,0 +1,11 @@
+**/.git
+**/.vs
+**/.vscode
+**/bin
+**/obj
+**/TestResults
+**/*.user
+**/*.suo
+**/*.nupkg
+**/.DS_Store
+FileShareExpert.Tests/
