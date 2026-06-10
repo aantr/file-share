@@ -6,10 +6,19 @@ const MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
 
 const el = {
   username: document.getElementById("username"),
+  email: document.getElementById("email"),
   password: document.getElementById("password"),
+  currentPassword: document.getElementById("currentPassword"),
+  newPassword: document.getElementById("newPassword"),
+  recoveryEmail: document.getElementById("recoveryEmail"),
+  resetToken: document.getElementById("resetToken"),
+  resetNewPassword: document.getElementById("resetNewPassword"),
   registerBtn: document.getElementById("registerBtn"),
   loginBtn: document.getElementById("loginBtn"),
   logoutBtn: document.getElementById("logoutBtn"),
+  changePasswordBtn: document.getElementById("changePasswordBtn"),
+  forgotPasswordBtn: document.getElementById("forgotPasswordBtn"),
+  resetPasswordBtn: document.getElementById("resetPasswordBtn"),
   authInfo: document.getElementById("authInfo"),
   uploadFileInput: document.getElementById("uploadFileInput"),
   uploadBtn: document.getElementById("uploadBtn"),
@@ -138,6 +147,13 @@ function getFriendlyApiErrorMessage(url, status, payload) {
   return `Ошибка запроса (HTTP ${status}).`;
 }
 
+function isValidEmail(email) {
+  if (!email) return false;
+  const atPos = email.indexOf("@");
+  const dotPos = email.lastIndexOf(".");
+  return atPos > 0 && dotPos > atPos + 1 && dotPos < email.length - 1;
+}
+
 function setCsrfToken(token) {
   state.csrfToken = token || "";
   if (state.csrfToken) {
@@ -149,7 +165,8 @@ function setCsrfToken(token) {
 
 function setAuthInfo() {
   if (state.user) {
-    el.authInfo.textContent = `Авторизован: ${state.user.username}`;
+    const emailPart = state.user.email ? ` (${state.user.email})` : "";
+    el.authInfo.textContent = `Авторизован: ${state.user.username}${emailPart}`;
   } else {
     el.authInfo.textContent = "Не авторизован";
   }
@@ -160,8 +177,12 @@ async function fetchMe() {
     const data = await requestJson("/api/auth/me", {
       method: "GET"
     });
-    state.user = { id: data.id, username: data.username };
+    state.user = { id: data.id, username: data.username, email: data.email || "" };
     setCsrfToken(data.csrfToken || "");
+    if (data.email) {
+      el.email.value = data.email;
+      el.recoveryEmail.value = data.email;
+    }
     setAuthInfo();
   } catch {
     state.user = null;
@@ -172,9 +193,14 @@ async function fetchMe() {
 
 async function register() {
   const username = el.username.value.trim();
+  const email = el.email.value.trim();
   const password = el.password.value;
-  if (!username || !password) {
-    writeLog("Введите логин и пароль.", true);
+  if (!username || !email || !password) {
+    writeLog("Введите логин, email и пароль.", true);
+    return;
+  }
+  if (!isValidEmail(email)) {
+    writeLog("Введите корректный email.", true);
     return;
   }
 
@@ -182,7 +208,7 @@ async function register() {
     await requestJson("/api/auth/register", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ username, password })
+      body: JSON.stringify({ username, email, password })
     });
     notifySuccess(`Пользователь ${username} зарегистрирован.`);
   } catch (error) {
@@ -202,6 +228,10 @@ async function login() {
     });
     setCsrfToken(data.csrfToken || "");
     state.user = data.user;
+    if (state.user?.email) {
+      el.email.value = state.user.email;
+      el.recoveryEmail.value = state.user.email;
+    }
     setAuthInfo();
     notifySuccess(`Вход выполнен: ${state.user.username}`);
     await loadFiles();
@@ -223,6 +253,90 @@ async function logout() {
     notifySuccess("Выход выполнен.");
   } catch (error) {
     writeLog(error.message || "Не удалось выполнить выход.", true);
+  }
+}
+
+async function changePassword() {
+  const currentPassword = el.currentPassword.value;
+  const newPassword = el.newPassword.value;
+
+  if (!currentPassword || !newPassword) {
+    writeLog("Введите текущий и новый пароль.", true);
+    return;
+  }
+
+  try {
+    await requestJson("/api/auth/change-password", {
+      method: "POST",
+      headers: {
+        ...csrfHeaders(),
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({ currentPassword, newPassword })
+    });
+    el.currentPassword.value = "";
+    el.newPassword.value = "";
+    notifySuccess("Пароль успешно изменен.");
+  } catch (error) {
+    writeLog(error.message, true);
+  }
+}
+
+async function forgotPassword() {
+  const email = (el.recoveryEmail.value || el.email.value || "").trim();
+  if (!email) {
+    writeLog("Введите email для восстановления.", true);
+    return;
+  }
+  if (!isValidEmail(email)) {
+    writeLog("Введите корректный email.", true);
+    return;
+  }
+
+  try {
+    const data = await requestJson("/api/auth/forgot-password", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({ email })
+    });
+    if (data?.resetToken) {
+      el.resetToken.value = data.resetToken;
+      alert(`Demo email: токен восстановления\n${data.resetToken}`);
+    }
+    notifySuccess("Инструкция по восстановлению отправлена.");
+  } catch (error) {
+    writeLog(error.message, true);
+  }
+}
+
+async function resetPassword() {
+  const email = (el.recoveryEmail.value || el.email.value || "").trim();
+  const resetToken = el.resetToken.value.trim();
+  const newPassword = el.resetNewPassword.value;
+
+  if (!email || !resetToken || !newPassword) {
+    writeLog("Введите email, токен и новый пароль.", true);
+    return;
+  }
+  if (!isValidEmail(email)) {
+    writeLog("Введите корректный email.", true);
+    return;
+  }
+
+  try {
+    await requestJson("/api/auth/reset-password", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({ email, resetToken, newPassword })
+    });
+    el.resetNewPassword.value = "";
+    notifySuccess("Пароль восстановлен. Теперь можно войти с новым паролем.");
+  } catch (error) {
+    writeLog(error.message, true);
   }
 }
 
@@ -535,6 +649,9 @@ async function downloadByShare() {
 el.registerBtn.addEventListener("click", register);
 el.loginBtn.addEventListener("click", login);
 el.logoutBtn.addEventListener("click", logout);
+el.changePasswordBtn.addEventListener("click", changePassword);
+el.forgotPasswordBtn.addEventListener("click", forgotPassword);
+el.resetPasswordBtn.addEventListener("click", resetPassword);
 el.uploadBtn.addEventListener("click", uploadFile);
 el.refreshFilesBtn.addEventListener("click", loadFiles);
 el.downloadByShareBtn.addEventListener("click", downloadByShare);

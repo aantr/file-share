@@ -27,6 +27,10 @@
           <input id="username" type="text" placeholder="user1">
         </label>
         <label>
+          Email
+          <input id="email" type="email" placeholder="user@example.com">
+        </label>
+        <label>
           Пароль
           <input id="password" type="password" placeholder="password">
         </label>
@@ -37,6 +41,48 @@
         <button id="logoutBtn" class="secondary">Выйти</button>
       </div>
       <p id="authInfo" class="muted">Не авторизован</p>
+
+      <hr>
+      <h3>Смена пароля</h3>
+      <div class="grid two">
+        <label>
+          Текущий пароль
+          <input id="currentPassword" type="password" placeholder="current password">
+        </label>
+        <label>
+          Новый пароль
+          <input id="newPassword" type="password" placeholder="new password">
+        </label>
+      </div>
+      <div class="actions">
+        <button id="changePasswordBtn">Сменить пароль</button>
+      </div>
+
+      <hr>
+      <h3>Забыли пароль</h3>
+      <div class="grid two">
+        <label>
+          Email для восстановления
+          <input id="recoveryEmail" type="email" placeholder="user@example.com">
+        </label>
+      </div>
+      <div class="actions">
+        <button id="forgotPasswordBtn" class="secondary">Отправить код восстановления</button>
+      </div>
+
+      <div class="grid two">
+        <label>
+          Токен из письма
+          <input id="resetToken" type="text" placeholder="reset token">
+        </label>
+        <label>
+          Новый пароль
+          <input id="resetNewPassword" type="password" placeholder="new password">
+        </label>
+      </div>
+      <div class="actions">
+        <button id="resetPasswordBtn">Восстановить пароль</button>
+      </div>
     </section>
 
     <section id="filesTab" class="card tab-panel">

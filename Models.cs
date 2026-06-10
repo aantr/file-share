@@ -1,8 +1,12 @@
 public record AuthRequest(string Username, string Password);
+public record RegisterRequest(string Username, string Password, string Email);
+public record ChangePasswordRequest(string CurrentPassword, string NewPassword);
+public record ForgotPasswordRequest(string Email);
+public record ResetPasswordRequest(string Email, string ResetToken, string NewPassword);
 public record RenameRequest(string NewFileName);
 public record WhitelistRequest(string Username);
 public record UserInfo(long Id, string Username);
 public record SessionInfo(string SessionToken, UserInfo User, string CsrfToken);
 public record FileInfoRow(long Id, long OwnerId, string OriginalName, string StoredName, string ContentType);
-public record UserCredentials(long UserId, string Username, string PasswordHash);
+public record UserCredentials(long UserId, string Username, string PasswordHash, string? Email);
 public record SharedFileInfo(long FileId, long OwnerId, string OriginalName, string StoredName, string ContentType);

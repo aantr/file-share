@@ -12,6 +12,7 @@ public static class DatabaseBootstrap
                               CREATE TABLE IF NOT EXISTS users (
                                   id INTEGER PRIMARY KEY AUTOINCREMENT,
                                   username TEXT NOT NULL UNIQUE,
+                                  email TEXT,
                                   password_hash TEXT NOT NULL,
                                   created_at TEXT NOT NULL
                               );
@@ -43,10 +44,22 @@ public static class DatabaseBootstrap
                                   FOREIGN KEY (file_id) REFERENCES files(id),
                                   FOREIGN KEY (user_id) REFERENCES users(id)
                               );
+
+                              CREATE TABLE IF NOT EXISTS password_reset_tokens (
+                                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                                  user_id INTEGER NOT NULL,
+                                  token TEXT NOT NULL UNIQUE,
+                                  expires_at TEXT NOT NULL,
+                                  used_at TEXT,
+                                  created_at TEXT NOT NULL,
+                                  FOREIGN KEY (user_id) REFERENCES users(id)
+                              );
                               """;
         command.ExecuteNonQuery();
 
         EnsureUserSessionsCsrfColumnExists(connection);
+        EnsureUsersEmailColumnExists(connection);
+        EnsureUsersEmailIndexExists(connection);
     }
 
     private static void EnsureUserSessionsCsrfColumnExists(SqliteConnection connection)
@@ -67,5 +80,32 @@ public static class DatabaseBootstrap
         using var alterCommand = connection.CreateCommand();
         alterCommand.CommandText = "ALTER TABLE user_sessions ADD COLUMN csrf_token TEXT NOT NULL DEFAULT '';";
         alterCommand.ExecuteNonQuery();
+    }
+
+    private static void EnsureUsersEmailColumnExists(SqliteConnection connection)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = "PRAGMA table_info(users);";
+
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            var existingColumnName = reader.GetString(1);
+            if (string.Equals(existingColumnName, "email", StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+        }
+
+        using var alterCommand = connection.CreateCommand();
+        alterCommand.CommandText = "ALTER TABLE users ADD COLUMN email TEXT;";
+        alterCommand.ExecuteNonQuery();
+    }
+
+    private static void EnsureUsersEmailIndexExists(SqliteConnection connection)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email ON users(email);";
+        command.ExecuteNonQuery();
     }
 }

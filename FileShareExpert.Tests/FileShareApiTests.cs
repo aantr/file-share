@@ -152,8 +152,9 @@ file sealed class TestApp : IAsyncDisposable
     public async Task<AuthSession> RegisterAndLoginAsync(string username, string password)
     {
         var client = _factory.CreateClient();
+        var email = $"{username}@test.local";
 
-        var registerResponse = await client.PostAsJsonAsync("/api/auth/register", new { username, password });
+        var registerResponse = await client.PostAsJsonAsync("/api/auth/register", new { username, email, password });
         Assert.True(registerResponse.StatusCode is HttpStatusCode.OK or HttpStatusCode.Conflict);
 
         var loginResponse = await client.PostAsJsonAsync("/api/auth/login", new { username, password });

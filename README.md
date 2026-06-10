@@ -4,6 +4,9 @@
 
 - регистрацией пользователя;
 - cookie-сессией и CSRF-защитой;
+- регистрацией с email;
+- сменой пароля в профиле;
+- восстановлением пароля по email (demo mode: токен возвращается в ответе API);
 - загрузкой, скачиванием, списком, удалением и переименованием файлов;
 - шарингом файла по ссылке;
 - белым списком пользователей для ограничения доступа к ссылке.
@@ -12,10 +15,13 @@
 
 ### Авторизация и пользователи
 
-- `POST /api/auth/register` - регистрация
+- `POST /api/auth/register` - регистрация (username + email + password)
 - `POST /api/auth/login` - логин, устанавливает cookie-сессию
 - `POST /api/auth/logout` - выход
 - `GET /api/auth/me` - текущий пользователь и CSRF-токен
+- `POST /api/auth/change-password` - смена пароля в аккаунте
+- `POST /api/auth/forgot-password` - запрос восстановления пароля по email (demo mode)
+- `POST /api/auth/reset-password` - сброс пароля по email + токену
 
 Для защищённых методов используется cookie `fs_token`.
 Для изменяющих запросов (`POST/PUT/DELETE`) нужен заголовок `X-CSRF-Token`.
