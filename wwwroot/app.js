@@ -2,6 +2,7 @@ const state = {
   csrfToken: sessionStorage.getItem("fs_csrf") || "",
   user: null
 };
+const MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
 
 const el = {
   username: document.getElementById("username"),
@@ -16,6 +17,8 @@ const el = {
   filesContainer: document.getElementById("filesContainer"),
   shareInput: document.getElementById("shareInput"),
   downloadByShareBtn: document.getElementById("downloadByShareBtn"),
+  tabButtons: document.querySelectorAll(".tab-btn"),
+  tabPanels: document.querySelectorAll(".tab-panel"),
   messageBox: document.getElementById("messageBox"),
   log: document.getElementById("log"),
   fileTemplate: document.getElementById("fileTemplate")
@@ -23,11 +26,12 @@ const el = {
 
 let messageTimer = null;
 
-function showError(message) {
+function showMessage(message, kind) {
   if (!el.messageBox) return;
   el.messageBox.textContent = message;
   el.messageBox.classList.remove("hidden");
-  el.messageBox.classList.add("error");
+  el.messageBox.classList.remove("error", "success");
+  el.messageBox.classList.add(kind);
 
   if (messageTimer) {
     clearTimeout(messageTimer);
@@ -38,12 +42,44 @@ function showError(message) {
   }, 6000);
 }
 
+function showError(message) {
+  showMessage(message, "error");
+}
+
+function showSuccess(message) {
+  showMessage(message, "success");
+}
+
 function writeLog(message, isError = false) {
   const prefix = new Date().toLocaleTimeString();
   const line = `[${prefix}] ${isError ? "ERROR: " : ""}${message}\n`;
   el.log.textContent = line + el.log.textContent;
   if (isError) {
     showError(message);
+  }
+}
+
+function notifySuccess(message) {
+  writeLog(message, false);
+  showSuccess(message);
+}
+
+function setupTabs() {
+  if (!el.tabButtons.length || !el.tabPanels.length) return;
+
+  for (const button of el.tabButtons) {
+    button.addEventListener("click", () => {
+      const targetId = button.dataset.tabTarget;
+      if (!targetId) return;
+
+      for (const panel of el.tabPanels) {
+        panel.classList.toggle("active", panel.id === targetId);
+      }
+
+      for (const tabButton of el.tabButtons) {
+        tabButton.classList.toggle("active", tabButton === button);
+      }
+    });
   }
 }
 
@@ -120,7 +156,7 @@ async function register() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ username, password })
     });
-    writeLog(`Пользователь ${username} зарегистрирован.`);
+    notifySuccess(`Пользователь ${username} зарегистрирован.`);
   } catch (error) {
     writeLog(error.message, true);
   }
@@ -139,7 +175,7 @@ async function login() {
     setCsrfToken(data.csrfToken || "");
     state.user = data.user;
     setAuthInfo();
-    writeLog(`Вход выполнен: ${state.user.username}`);
+    notifySuccess(`Вход выполнен: ${state.user.username}`);
     await loadFiles();
   } catch (error) {
     writeLog(error.message, true);
@@ -156,7 +192,7 @@ async function logout() {
     setCsrfToken("");
     setAuthInfo();
     el.filesContainer.innerHTML = "";
-    writeLog("Выход выполнен.");
+    notifySuccess("Выход выполнен.");
   } catch (error) {
     writeLog(error.message || "Не удалось выполнить выход.", true);
   }
@@ -166,6 +202,10 @@ async function uploadFile() {
   const file = el.uploadFileInput.files?.[0];
   if (!file) {
     writeLog("Выберите файл для загрузки.", true);
+    return;
+  }
+  if (file.size > MAX_UPLOAD_BYTES) {
+    writeLog(`Файл слишком большой. Максимум ${Math.floor(MAX_UPLOAD_BYTES / (1024 * 1024))} MB.`, true);
     return;
   }
 
@@ -179,15 +219,24 @@ async function uploadFile() {
       headers: csrfHeaders(),
       body: formData
     });
-    const payload = await response.json();
+    let payload = null;
+    try {
+      payload = await response.json();
+    } catch {
+      payload = null;
+    }
     if (!response.ok) {
       throw new Error(payload?.error || `HTTP ${response.status}`);
     }
 
-    writeLog(`Файл загружен: ${payload.file?.name || file.name}`);
+    notifySuccess(`Файл загружен: ${payload.file?.name || file.name}`);
     el.uploadFileInput.value = "";
     await loadFiles();
   } catch (error) {
+    if (error instanceof TypeError) {
+      writeLog("Не удалось отправить файл. Проверьте размер и доступность сервера.", true);
+      return;
+    }
     writeLog(error.message, true);
   }
 }
@@ -278,7 +327,7 @@ async function loadWhitelist(fileId, container) {
             method: "DELETE",
             headers: csrfHeaders()
           });
-          writeLog(`Пользователь ${username} удален из whitelist.`);
+        notifySuccess(`Пользователь ${username} удален из whitelist.`);
           await loadWhitelist(fileId, container);
         } catch (error) {
           writeLog(error.message, true);
@@ -311,7 +360,7 @@ function renderFiles(files) {
     node.querySelector(".download-btn").addEventListener("click", async () => {
       try {
         await downloadUrl(`/api/files/${file.id}/download`, file.name);
-        writeLog(`Скачан файл: ${file.name}`);
+        notifySuccess(`Скачан файл: ${file.name}`);
       } catch (error) {
         writeLog(error.message, true);
       }
@@ -323,7 +372,7 @@ function renderFiles(files) {
           method: "DELETE",
           headers: csrfHeaders()
         });
-        writeLog(`Файл удален: ${file.name}`);
+        notifySuccess(`Файл удален: ${file.name}`);
         await loadFiles();
       } catch (error) {
         writeLog(error.message, true);
@@ -348,7 +397,7 @@ function renderFiles(files) {
           },
           body: JSON.stringify({ newFileName })
         });
-        writeLog(`Файл переименован: ${newFileName}`);
+        notifySuccess(`Файл переименован: ${newFileName}`);
         await loadFiles();
       } catch (error) {
         writeLog(error.message, true);
@@ -362,7 +411,7 @@ function renderFiles(files) {
           headers: csrfHeaders()
         });
         shareUrlInput.value = data.shareUrl || "";
-        writeLog("Ссылка создана/получена.");
+        notifySuccess("Ссылка создана/получена.");
       } catch (error) {
         writeLog(error.message, true);
       }
@@ -375,7 +424,7 @@ function renderFiles(files) {
           headers: csrfHeaders()
         });
         shareUrlInput.value = "";
-        writeLog("Ссылка отключена.");
+        notifySuccess("Ссылка отключена.");
       } catch (error) {
         writeLog(error.message, true);
       }
@@ -400,7 +449,7 @@ function renderFiles(files) {
           },
           body: JSON.stringify({ username })
         });
-        writeLog(`Пользователь ${username} добавлен в whitelist.`);
+        notifySuccess(`Пользователь ${username} добавлен в whitelist.`);
         whitelistUserInput.value = "";
         await loadWhitelist(file.id, whitelistList);
       } catch (error) {
@@ -441,7 +490,7 @@ async function downloadByShare() {
 
   try {
     await downloadUrl(`/api/share/${token}`);
-    writeLog("Скачивание по ссылке запущено.");
+    notifySuccess("Скачивание по ссылке запущено.");
   } catch (error) {
     writeLog(error.message, true);
   }
@@ -455,6 +504,7 @@ el.refreshFilesBtn.addEventListener("click", loadFiles);
 el.downloadByShareBtn.addEventListener("click", downloadByShare);
 
 (async () => {
+  setupTabs();
   setAuthInfo();
   await fetchMe();
   await loadFiles();

@@ -12,7 +12,14 @@
     <p class="muted">Веб-интерфейс файлообменника</p>
     <div id="messageBox" class="message-box hidden" role="alert"></div>
 
-    <section class="card">
+    <div class="tab-bar">
+      <button class="tab-btn active" data-tab-target="accountTab">Аккаунт</button>
+      <button class="tab-btn" data-tab-target="filesTab">Файлы</button>
+      <button class="tab-btn" data-tab-target="linksTab">Ссылки</button>
+      <button class="tab-btn" data-tab-target="logsTab">Логи</button>
+    </div>
+
+    <section id="accountTab" class="card tab-panel active">
       <h2>Пользователь</h2>
       <div class="grid two">
         <label>
@@ -32,23 +39,17 @@
       <p id="authInfo" class="muted">Не авторизован</p>
     </section>
 
-    <section class="card">
-      <h2>Загрузка файла</h2>
+    <section id="filesTab" class="card tab-panel">
+      <h2>Загрузка и управление файлами</h2>
       <div class="actions">
         <input id="uploadFileInput" type="file">
         <button id="uploadBtn">Загрузить</button>
-      </div>
-    </section>
-
-    <section class="card">
-      <h2>Мои файлы</h2>
-      <div class="actions">
         <button id="refreshFilesBtn" class="secondary">Обновить список</button>
       </div>
       <div id="filesContainer" class="files"></div>
     </section>
 
-    <section class="card">
+    <section id="linksTab" class="card tab-panel">
       <h2>Скачивание по ссылке</h2>
       <p class="muted">Можно скачать файл по share token или полной ссылке.</p>
       <label>
@@ -60,7 +61,7 @@
       </div>
     </section>
 
-    <section class="card">
+    <section id="logsTab" class="card tab-panel">
       <h2>Логи</h2>
       <pre id="log"></pre>
     </section>

@@ -41,12 +41,41 @@ h1, h2 {
   color: #fecaca;
 }
 
+.message-box.success {
+  background: #064e3b;
+  border-color: #10b981;
+  color: #d1fae5;
+}
+
 .card {
   background: #1f2937;
   border: 1px solid #374151;
   border-radius: 10px;
   padding: 16px;
   margin-bottom: 16px;
+}
+
+.tab-bar {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+
+.tab-btn {
+  background: #374151;
+}
+
+.tab-btn.active {
+  background: #2563eb;
+}
+
+.tab-panel {
+  display: none;
+}
+
+.tab-panel.active {
+  display: block;
 }
 
 .grid.two {
