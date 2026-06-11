@@ -43,6 +43,41 @@ public sealed class FileShareApiTests
     }
 
     [Fact]
+    public async Task Register_WithInvalidEmail_ReturnsBadRequestWithCode()
+    {
+        await using var app = await TestApp.CreateAsync();
+        var client = app.CreateClient();
+
+        var response = await client.PostAsJsonAsync("/api/auth/register", new
+        {
+            username = app.CreateUniqueUsername(),
+            email = "invalid-email",
+            password = "pass1234"
+        });
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        var json = await response.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("AUTH_INVALID_EMAIL", json.GetProperty("code").GetString());
+        Assert.False(string.IsNullOrWhiteSpace(json.GetProperty("error").GetString()));
+    }
+
+    [Fact]
+    public async Task Register_WithTooShortCredentials_ReturnsBadRequest()
+    {
+        await using var app = await TestApp.CreateAsync();
+        var client = app.CreateClient();
+
+        var response = await client.PostAsJsonAsync("/api/auth/register", new
+        {
+            username = "ab",
+            email = "ab@test.local",
+            password = "123"
+        });
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+    }
+
+    [Fact]
     public async Task Login_WithInvalidPassword_ReturnsUnauthorized()
     {
         await using var app = await TestApp.CreateAsync();
@@ -118,6 +153,20 @@ public sealed class FileShareApiTests
         Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
         var json = await response.Content.ReadFromJsonAsync<JsonElement>();
         Assert.Equal("AUTH_INVALID_STATE", json.GetProperty("code").GetString());
+    }
+
+    [Fact]
+    public async Task Logout_WithoutSession_ReturnsConflictWithCode()
+    {
+        await using var app = await TestApp.CreateAsync();
+        var client = app.CreateClient();
+
+        var response = await client.PostAsync("/api/auth/logout", content: null);
+
+        Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
+        var json = await response.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("AUTH_ALREADY_LOGGED_OUT", json.GetProperty("code").GetString());
+        Assert.False(string.IsNullOrWhiteSpace(json.GetProperty("error").GetString()));
     }
 
     [Fact]
@@ -222,6 +271,19 @@ public sealed class FileShareApiTests
     }
 
     [Fact]
+    public async Task ForgotPassword_WithInvalidEmail_ReturnsBadRequestWithCode()
+    {
+        await using var app = await TestApp.CreateAsync();
+        var client = app.CreateClient();
+
+        var response = await client.PostAsJsonAsync("/api/auth/forgot-password", new { email = "not-an-email" });
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        var json = await response.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("AUTH_INVALID_EMAIL", json.GetProperty("code").GetString());
+    }
+
+    [Fact]
     public async Task ResetPassword_WithInvalidToken_ReturnsUnauthorized()
     {
         await using var app = await TestApp.CreateAsync();
@@ -240,6 +302,24 @@ public sealed class FileShareApiTests
         Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
         var json = await response.Content.ReadFromJsonAsync<JsonElement>();
         Assert.Equal("AUTH_INVALID_RESET_TOKEN", json.GetProperty("code").GetString());
+    }
+
+    [Fact]
+    public async Task ResetPassword_WithInvalidEmail_ReturnsBadRequestWithCode()
+    {
+        await using var app = await TestApp.CreateAsync();
+        var client = app.CreateClient();
+
+        var response = await client.PostAsJsonAsync("/api/auth/reset-password", new
+        {
+            email = "invalid-email",
+            resetToken = "token",
+            newPassword = "new-pass"
+        });
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        var json = await response.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("AUTH_INVALID_EMAIL", json.GetProperty("code").GetString());
     }
 
     [Fact]
@@ -401,6 +481,24 @@ public sealed class FileShareApiTests
     }
 
     [Fact]
+    public async Task CreateShare_ReturnsShareUrlContainingToken()
+    {
+        await using var app = await TestApp.CreateAsync();
+        var owner = await app.RegisterAndLoginAsync(app.CreateUniqueUsername(), "pass1234");
+        var uploaded = await app.UploadFileAsync(owner, "public.txt", "data");
+
+        var response = await app.SendMutatingAsync(owner, HttpMethod.Post, $"/api/files/{uploaded.FileId}/share");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        var json = await response.Content.ReadFromJsonAsync<JsonElement>();
+        var token = json.GetProperty("shareToken").GetString();
+        var url = json.GetProperty("shareUrl").GetString();
+        Assert.False(string.IsNullOrWhiteSpace(token));
+        Assert.False(string.IsNullOrWhiteSpace(url));
+        Assert.Contains($"/api/share/{token}", url, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task ShareWithWhitelist_RestrictsAccessToAllowedUsers()
     {
         await using var app = await TestApp.CreateAsync();
@@ -508,6 +606,18 @@ public sealed class FileShareApiTests
             $"/api/files/{uploaded.FileId}/whitelist",
             JsonContent.Create(new { username = owner.Username }));
 
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Whitelist_List_WhenNonOwnerRequests_ReturnsNotFound()
+    {
+        await using var app = await TestApp.CreateAsync();
+        var owner = await app.RegisterAndLoginAsync(app.CreateUniqueUsername(), "pass1234");
+        var stranger = await app.RegisterAndLoginAsync(app.CreateUniqueUsername(), "pass1234");
+        var uploaded = await app.UploadFileAsync(owner, "private.txt", "secret");
+
+        var response = await stranger.Client.GetAsync($"/api/files/{uploaded.FileId}/whitelist");
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
     }
 

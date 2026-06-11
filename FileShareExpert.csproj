@@ -11,6 +11,7 @@
 
   <ItemGroup>
     <Compile Remove="FileShareExpert.Tests\**\*.cs" />
-    <None Include="FileShareExpert.Tests\**\*" />
+    <None Remove="FileShareExpert.Tests\**\*" />
+    <Content Remove="FileShareExpert.Tests\**\*" />
   </ItemGroup>
 </Project>
