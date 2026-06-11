@@ -25,7 +25,7 @@ public static class DatabaseBootstrap
                                   FOREIGN KEY (user_id) REFERENCES users(id)
                               );
 
-                              CREATE TABLE IF NOT EXISTS files (
+                              CREATE TABLE IF NOT EXISTS Files (
                                   id INTEGER PRIMARY KEY AUTOINCREMENT,
                                   owner_id INTEGER NOT NULL,
                                   original_name TEXT NOT NULL,
@@ -41,7 +41,7 @@ public static class DatabaseBootstrap
                                   file_id INTEGER NOT NULL,
                                   user_id INTEGER NOT NULL,
                                   PRIMARY KEY (file_id, user_id),
-                                  FOREIGN KEY (file_id) REFERENCES files(id),
+                                  FOREIGN KEY (file_id) REFERENCES Files(id),
                                   FOREIGN KEY (user_id) REFERENCES users(id)
                               );
 

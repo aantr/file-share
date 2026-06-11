@@ -2,10 +2,10 @@ using Microsoft.Data.Sqlite;
 
 public static class FileEndpoints
 {
-    public static void Map(WebApplication app, string connectionString, string uploadsDirectoryPath)
+    public static void Map(WebApplication app, string connectionString, string uploadsDirectoryPath, long maxUploadBytes)
     {
         app.MapPost("/api/files/upload", (HttpRequest httpRequest) =>
-            UploadAsync(httpRequest, connectionString, uploadsDirectoryPath));
+            UploadAsync(httpRequest, connectionString, uploadsDirectoryPath, maxUploadBytes));
         app.MapGet("/api/files", (HttpRequest httpRequest) => ListAsync(httpRequest, connectionString));
         app.MapGet("/api/files/{id:long}/download", (long id, HttpRequest httpRequest) =>
             DownloadOwnedAsync(id, httpRequest, connectionString, uploadsDirectoryPath));
@@ -29,7 +29,7 @@ public static class FileEndpoints
             ListWhitelistAsync(id, httpRequest, connectionString));
     }
 
-    private static async Task<IResult> UploadAsync(HttpRequest httpRequest, string connectionString, string uploadsDirectoryPath)
+    private static async Task<IResult> UploadAsync(HttpRequest httpRequest, string connectionString, string uploadsDirectoryPath, long maxUploadBytes)
     {
         var session = await SecurityServices.GetAuthenticatedSessionAsync(httpRequest, connectionString, requireCsrf: true);
         if (session is null)
@@ -49,9 +49,9 @@ public static class FileEndpoints
             return Results.BadRequest(new { error = "Файл не передан." });
         }
 
-        if (file.Length > AppConstants.MaxUploadBytes)
+        if (file.Length > maxUploadBytes)
         {
-            return Results.BadRequest(new { error = $"Размер файла не должен превышать {AppConstants.MaxUploadBytes / (1024 * 1024)} MB." });
+            return Results.BadRequest(new { error = $"Размер файла не должен превышать {maxUploadBytes / (1024 * 1024)} MB." });
         }
 
         var extension = Path.GetExtension(file.FileName);
@@ -71,7 +71,7 @@ public static class FileEndpoints
             var insert = connection.CreateCommand();
             insert.Transaction = tx;
             insert.CommandText = """
-                                 INSERT INTO files (owner_id, original_name, stored_name, size, content_type, created_at)
+                                 INSERT INTO Files (owner_id, original_name, stored_name, size, content_type, created_at)
                                  VALUES ($ownerId, $originalName, $storedName, $size, $contentType, $createdAt);
                                  """;
             insert.Parameters.AddWithValue("$ownerId", session.User.Id);
@@ -117,7 +117,7 @@ public static class FileEndpoints
         var command = connection.CreateCommand();
         command.CommandText = """
                               SELECT id, original_name, size, content_type, created_at, share_token
-                              FROM files
+                              FROM Files
                               WHERE owner_id = $ownerId
                               ORDER BY created_at DESC;
                               """;
@@ -204,7 +204,7 @@ public static class FileEndpoints
 
             var deleteFile = connection.CreateCommand();
             deleteFile.Transaction = tx;
-            deleteFile.CommandText = "DELETE FROM files WHERE id = $fileId;";
+            deleteFile.CommandText = "DELETE FROM Files WHERE id = $fileId;";
             deleteFile.Parameters.AddWithValue("$fileId", fileId);
             var affected = await deleteFile.ExecuteNonQueryAsync();
             if (affected == 0)
@@ -243,7 +243,7 @@ public static class FileEndpoints
         await using var connection = await SqliteDb.OpenConnectionAsync(connectionString);
         var command = connection.CreateCommand();
         command.CommandText = """
-                              UPDATE files
+                              UPDATE Files
                               SET original_name = $newFileName
                               WHERE id = $fileId AND owner_id = $ownerId;
                               """;
@@ -269,7 +269,7 @@ public static class FileEndpoints
         var tokenCommand = connection.CreateCommand();
         tokenCommand.CommandText = """
                                    SELECT share_token
-                                   FROM files
+                                   FROM Files
                                    WHERE id = $fileId AND owner_id = $ownerId
                                    LIMIT 1;
                                    """;
@@ -291,7 +291,7 @@ public static class FileEndpoints
             shareToken = SecurityServices.GenerateToken();
             var updateCommand = connection.CreateCommand();
             updateCommand.CommandText = """
-                                        UPDATE files
+                                        UPDATE Files
                                         SET share_token = $shareToken
                                         WHERE id = $fileId AND owner_id = $ownerId;
                                         """;
@@ -319,7 +319,7 @@ public static class FileEndpoints
         await using var connection = await SqliteDb.OpenConnectionAsync(connectionString);
         var command = connection.CreateCommand();
         command.CommandText = """
-                              UPDATE files
+                              UPDATE Files
                               SET share_token = NULL
                               WHERE id = $fileId AND owner_id = $ownerId;
                               """;
@@ -338,7 +338,7 @@ public static class FileEndpoints
         var command = connection.CreateCommand();
         command.CommandText = """
                               SELECT id, owner_id, original_name, stored_name, content_type
-                              FROM files
+                              FROM Files
                               WHERE share_token = $token
                               LIMIT 1;
                               """;
@@ -506,7 +506,7 @@ public static class FileEndpoints
         var command = connection.CreateCommand();
         command.CommandText = """
                               SELECT id, owner_id, original_name, stored_name, content_type
-                              FROM files
+                              FROM Files
                               WHERE id = $fileId AND owner_id = $ownerId
                               LIMIT 1;
                               """;
@@ -530,7 +530,7 @@ public static class FileEndpoints
     private static async Task<bool> OwnerHasFileAsync(SqliteConnection connection, long fileId, long ownerId)
     {
         var command = connection.CreateCommand();
-        command.CommandText = "SELECT COUNT(1) FROM files WHERE id = $fileId AND owner_id = $ownerId;";
+        command.CommandText = "SELECT COUNT(1) FROM Files WHERE id = $fileId AND owner_id = $ownerId;";
         command.Parameters.AddWithValue("$fileId", fileId);
         command.Parameters.AddWithValue("$ownerId", ownerId);
         return Convert.ToInt32(await command.ExecuteScalarAsync() ?? 0) > 0;

@@ -138,8 +138,22 @@ heroku logs --tail -a <your-app-name>
 
 ## Где хранятся данные
 
-- База SQLite: `storage/fileshare.db`
-- Загруженные файлы: `storage/uploads/`
+- Метаданные файлов: таблица `Files` в SQLite
+- База SQLite: `<StorageFolderPath>/fileshare.db`
+- Загруженные файлы: `<StorageFolderPath>/uploads/`
+
+Параметры `StorageFolderPath` и `MaxFileSizeBytes` задаются в `web.config` в секции `appSettings`.
+
+Пример:
+
+```xml
+<configuration>
+  <appSettings>
+    <add key="StorageFolderPath" value="storage" />
+    <add key="MaxFileSizeBytes" value="52428800" />
+  </appSettings>
+</configuration>
+```
 
 ## Мини-пример использования (через Postman/Insomnia)
 

@@ -3,7 +3,7 @@ const state = {
   user: null,
   lastKnownEmail: ""
 };
-const MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
+let maxUploadBytes = 50 * 1024 * 1024;
 
 const el = {
   loginUsername: document.getElementById("loginUsername"),
@@ -216,6 +216,24 @@ async function fetchMe() {
   }
 }
 
+async function loadPublicSettings() {
+  try {
+    const response = await fetch("/api/settings", {
+      method: "GET",
+      credentials: "same-origin"
+    });
+    if (!response.ok) {
+      return;
+    }
+    const data = await response.json();
+    if (Number.isFinite(data?.maxUploadBytes) && data.maxUploadBytes > 0) {
+      maxUploadBytes = data.maxUploadBytes;
+    }
+  } catch {
+    // Keep default client-side limit if endpoint is unavailable.
+  }
+}
+
 async function register() {
   const username = el.registerUsername.value.trim();
   const email = el.registerEmail.value.trim();
@@ -374,8 +392,8 @@ async function uploadFile() {
     writeLog("Выберите файл для загрузки.", true);
     return;
   }
-  if (file.size > MAX_UPLOAD_BYTES) {
-    writeLog(`Файл слишком большой. Максимум ${Math.floor(MAX_UPLOAD_BYTES / (1024 * 1024))} MB.`, true);
+  if (file.size > maxUploadBytes) {
+    writeLog(`Файл слишком большой. Максимум ${Math.floor(maxUploadBytes / (1024 * 1024))} MB.`, true);
     return;
   }
 
@@ -687,6 +705,7 @@ el.downloadByShareBtn.addEventListener("click", downloadByShare);
 (async () => {
   setupTabs();
   setupAccountSubtabs();
+  await loadPublicSettings();
   setAuthInfo();
   await fetchMe();
   await loadFiles();

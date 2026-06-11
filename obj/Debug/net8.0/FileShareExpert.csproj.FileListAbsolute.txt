@@ -52,3 +52,4 @@ C:\Users\123\FileShareExpert\obj\Debug\net8.0\refint\FileShareExpert.dll
 C:\Users\123\FileShareExpert\obj\Debug\net8.0\FileShareExpert.pdb
 C:\Users\123\FileShareExpert\obj\Debug\net8.0\FileShareExpert.genruntimeconfig.cache
 C:\Users\123\FileShareExpert\obj\Debug\net8.0\ref\FileShareExpert.dll
+C:\Users\123\FileShareExpert\bin\Debug\net8.0\web.config
