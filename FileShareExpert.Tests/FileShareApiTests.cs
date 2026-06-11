@@ -25,6 +25,224 @@ public sealed class FileShareApiTests
     }
 
     [Fact]
+    public async Task Register_WhenAlreadyAuthenticated_ReturnsConflictWithCode()
+    {
+        await using var app = await TestApp.CreateAsync();
+        var session = await app.RegisterAndLoginAsync(app.CreateUniqueUsername(), "pass1234");
+
+        var response = await session.Client.PostAsJsonAsync("/api/auth/register", new
+        {
+            username = app.CreateUniqueUsername(),
+            email = $"{Guid.NewGuid():N}@test.local",
+            password = "pass1234"
+        });
+
+        Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
+        var json = await response.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("AUTH_ALREADY_AUTHENTICATED", json.GetProperty("code").GetString());
+    }
+
+    [Fact]
+    public async Task Login_WithInvalidPassword_ReturnsUnauthorized()
+    {
+        await using var app = await TestApp.CreateAsync();
+        var username = app.CreateUniqueUsername();
+        await app.RegisterAsync(username, "pass1234");
+
+        var wrongPasswordClient = app.CreateClient();
+        var loginResponse = await wrongPasswordClient.PostAsJsonAsync("/api/auth/login", new
+        {
+            username,
+            password = "wrong-pass"
+        });
+
+        Assert.Equal(HttpStatusCode.Unauthorized, loginResponse.StatusCode);
+        var json = await loginResponse.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("AUTH_INVALID_CREDENTIALS", json.GetProperty("code").GetString());
+    }
+
+    [Fact]
+    public async Task Login_WhenAlreadyAuthenticated_ReturnsConflictWithCode()
+    {
+        await using var app = await TestApp.CreateAsync();
+        var username = app.CreateUniqueUsername();
+        var session = await app.RegisterAndLoginAsync(username, "pass1234");
+
+        var secondLogin = await session.Client.PostAsJsonAsync("/api/auth/login", new
+        {
+            username,
+            password = "pass1234"
+        });
+
+        Assert.Equal(HttpStatusCode.Conflict, secondLogin.StatusCode);
+        var json = await secondLogin.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("AUTH_ALREADY_AUTHENTICATED", json.GetProperty("code").GetString());
+    }
+
+    [Fact]
+    public async Task Me_WithoutAuth_ReturnsUnauthorizedWithCode()
+    {
+        await using var app = await TestApp.CreateAsync();
+        var client = app.CreateClient();
+
+        var response = await client.GetAsync("/api/auth/me");
+
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+        var json = await response.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("AUTH_ALREADY_LOGGED_OUT", json.GetProperty("code").GetString());
+    }
+
+    [Fact]
+    public async Task Logout_WithValidCsrf_LogsOutAndRepeatedLogoutReturnsConflict()
+    {
+        await using var app = await TestApp.CreateAsync();
+        var session = await app.RegisterAndLoginAsync(app.CreateUniqueUsername(), "pass1234");
+
+        var firstLogout = await app.SendMutatingAsync(session, HttpMethod.Post, "/api/auth/logout");
+        Assert.Equal(HttpStatusCode.OK, firstLogout.StatusCode);
+
+        var secondLogout = await app.SendMutatingAsync(session, HttpMethod.Post, "/api/auth/logout");
+        Assert.Equal(HttpStatusCode.Conflict, secondLogout.StatusCode);
+        var json = await secondLogout.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("AUTH_ALREADY_LOGGED_OUT", json.GetProperty("code").GetString());
+    }
+
+    [Fact]
+    public async Task Logout_WithoutCsrf_ReturnsUnauthorizedWithInvalidStateCode()
+    {
+        await using var app = await TestApp.CreateAsync();
+        var session = await app.RegisterAndLoginAsync(app.CreateUniqueUsername(), "pass1234");
+
+        var response = await session.Client.PostAsync("/api/auth/logout", content: null);
+
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+        var json = await response.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("AUTH_INVALID_STATE", json.GetProperty("code").GetString());
+    }
+
+    [Fact]
+    public async Task ChangePassword_Success_InvalidatesOldPassword()
+    {
+        await using var app = await TestApp.CreateAsync();
+        var username = app.CreateUniqueUsername();
+        var session = await app.RegisterAndLoginAsync(username, "old-pass");
+
+        var changeResponse = await app.SendMutatingJsonAsync(
+            session,
+            HttpMethod.Post,
+            "/api/auth/change-password",
+            JsonContent.Create(new { currentPassword = "old-pass", newPassword = "new-pass" }));
+        Assert.Equal(HttpStatusCode.OK, changeResponse.StatusCode);
+
+        await app.LogoutWithCsrfAsync(session);
+
+        var oldLoginClient = app.CreateClient();
+        var oldLoginResponse = await oldLoginClient.PostAsJsonAsync("/api/auth/login", new
+        {
+            username,
+            password = "old-pass"
+        });
+        Assert.Equal(HttpStatusCode.Unauthorized, oldLoginResponse.StatusCode);
+
+        var newLoginClient = app.CreateClient();
+        var newLoginResponse = await newLoginClient.PostAsJsonAsync("/api/auth/login", new
+        {
+            username,
+            password = "new-pass"
+        });
+        Assert.Equal(HttpStatusCode.OK, newLoginResponse.StatusCode);
+    }
+
+    [Fact]
+    public async Task ChangePassword_WithWrongCurrentPassword_ReturnsUnauthorized()
+    {
+        await using var app = await TestApp.CreateAsync();
+        var session = await app.RegisterAndLoginAsync(app.CreateUniqueUsername(), "pass1234");
+
+        var response = await app.SendMutatingJsonAsync(
+            session,
+            HttpMethod.Post,
+            "/api/auth/change-password",
+            JsonContent.Create(new { currentPassword = "wrong", newPassword = "new-pass" }));
+
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+        var json = await response.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("AUTH_INVALID_CREDENTIALS", json.GetProperty("code").GetString());
+    }
+
+    [Fact]
+    public async Task ForgotAndResetPassword_WorksAndTokenCannotBeReused()
+    {
+        await using var app = await TestApp.CreateAsync();
+        var username = app.CreateUniqueUsername();
+        var email = $"{username}@test.local";
+        await app.RegisterAsync(username, "pass1234", email);
+
+        var anonymousClient = app.CreateClient();
+        var forgotResponse = await anonymousClient.PostAsJsonAsync("/api/auth/forgot-password", new { email });
+        Assert.Equal(HttpStatusCode.OK, forgotResponse.StatusCode);
+        var forgotJson = await forgotResponse.Content.ReadFromJsonAsync<JsonElement>();
+        var resetToken = forgotJson.GetProperty("resetToken").GetString();
+        Assert.False(string.IsNullOrWhiteSpace(resetToken));
+
+        var resetResponse = await anonymousClient.PostAsJsonAsync("/api/auth/reset-password", new
+        {
+            email,
+            resetToken,
+            newPassword = "new-pass"
+        });
+        Assert.Equal(HttpStatusCode.OK, resetResponse.StatusCode);
+
+        var reuseResponse = await anonymousClient.PostAsJsonAsync("/api/auth/reset-password", new
+        {
+            email,
+            resetToken,
+            newPassword = "another-pass"
+        });
+        Assert.Equal(HttpStatusCode.Unauthorized, reuseResponse.StatusCode);
+        var reuseJson = await reuseResponse.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("AUTH_INVALID_RESET_TOKEN", reuseJson.GetProperty("code").GetString());
+
+        var loginClient = app.CreateClient();
+        var loginResponse = await loginClient.PostAsJsonAsync("/api/auth/login", new { username, password = "new-pass" });
+        Assert.Equal(HttpStatusCode.OK, loginResponse.StatusCode);
+    }
+
+    [Fact]
+    public async Task ForgotPassword_WhenEmailNotFound_ReturnsNotFoundCode()
+    {
+        await using var app = await TestApp.CreateAsync();
+        var client = app.CreateClient();
+
+        var response = await client.PostAsJsonAsync("/api/auth/forgot-password", new { email = "missing@test.local" });
+
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+        var json = await response.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("AUTH_EMAIL_NOT_FOUND", json.GetProperty("code").GetString());
+    }
+
+    [Fact]
+    public async Task ResetPassword_WithInvalidToken_ReturnsUnauthorized()
+    {
+        await using var app = await TestApp.CreateAsync();
+        var username = app.CreateUniqueUsername();
+        var email = $"{username}@test.local";
+        await app.RegisterAsync(username, "pass1234", email);
+
+        var client = app.CreateClient();
+        var response = await client.PostAsJsonAsync("/api/auth/reset-password", new
+        {
+            email,
+            resetToken = "invalid-token",
+            newPassword = "new-pass"
+        });
+
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+        var json = await response.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("AUTH_INVALID_RESET_TOKEN", json.GetProperty("code").GetString());
+    }
+
+    [Fact]
     public async Task UploadRenameDownloadDelete_FlowWorks()
     {
         await using var app = await TestApp.CreateAsync();
@@ -57,6 +275,93 @@ public sealed class FileShareApiTests
     }
 
     [Fact]
+    public async Task FilesList_WithoutAuth_ReturnsUnauthorized()
+    {
+        await using var app = await TestApp.CreateAsync();
+        var client = app.CreateClient();
+
+        var response = await client.GetAsync("/api/files");
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Upload_WithoutMultipartFormData_ReturnsBadRequest()
+    {
+        await using var app = await TestApp.CreateAsync();
+        var session = await app.RegisterAndLoginAsync(app.CreateUniqueUsername(), "pass1234");
+
+        var request = new HttpRequestMessage(HttpMethod.Post, "/api/files/upload")
+        {
+            Content = JsonContent.Create(new { fake = true })
+        };
+        request.Headers.Add("X-CSRF-Token", session.CsrfToken);
+
+        var response = await session.Client.SendAsync(request);
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Upload_TooLargeFile_ReturnsBadRequest()
+    {
+        await using var app = await TestApp.CreateAsync();
+        var session = await app.RegisterAndLoginAsync(app.CreateUniqueUsername(), "pass1234");
+
+        var payload = new byte[AppConstants.MaxUploadBytes + 1];
+        var form = new MultipartFormDataContent
+        {
+            { new ByteArrayContent(payload), "file", "huge.bin" }
+        };
+
+        var request = new HttpRequestMessage(HttpMethod.Post, "/api/files/upload")
+        {
+            Content = form
+        };
+        request.Headers.Add("X-CSRF-Token", session.CsrfToken);
+
+        var response = await session.Client.SendAsync(request);
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Rename_EmptyName_ReturnsBadRequest()
+    {
+        await using var app = await TestApp.CreateAsync();
+        var session = await app.RegisterAndLoginAsync(app.CreateUniqueUsername(), "pass1234");
+        var uploaded = await app.UploadFileAsync(session, "x.txt", "data");
+
+        var response = await app.SendMutatingJsonAsync(
+            session,
+            HttpMethod.Put,
+            $"/api/files/{uploaded.FileId}/rename",
+            JsonContent.Create(new { newFileName = "   " }));
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task DownloadOwned_WhenUserHasNoAccess_ReturnsNotFound()
+    {
+        await using var app = await TestApp.CreateAsync();
+        var owner = await app.RegisterAndLoginAsync(app.CreateUniqueUsername(), "pass1234");
+        var stranger = await app.RegisterAndLoginAsync(app.CreateUniqueUsername(), "pass1234");
+        var uploaded = await app.UploadFileAsync(owner, "private.txt", "private");
+
+        var response = await stranger.Client.GetAsync($"/api/files/{uploaded.FileId}/download");
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Delete_WithoutCsrf_ReturnsUnauthorized()
+    {
+        await using var app = await TestApp.CreateAsync();
+        var session = await app.RegisterAndLoginAsync(app.CreateUniqueUsername(), "pass1234");
+        var uploaded = await app.UploadFileAsync(session, "x.txt", "x");
+
+        var response = await session.Client.DeleteAsync($"/api/files/{uploaded.FileId}");
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+    }
+
+    [Fact]
     public async Task ShareWithoutWhitelist_IsAccessibleAnonymously()
     {
         await using var app = await TestApp.CreateAsync();
@@ -73,6 +378,26 @@ public sealed class FileShareApiTests
         var anonymousClient = app.CreateClient();
         var anonymousContent = await anonymousClient.GetStringAsync($"/api/share/{shareToken}");
         Assert.Equal("public-content", anonymousContent);
+    }
+
+    [Fact]
+    public async Task CreateShare_CalledTwice_ReusesSameToken()
+    {
+        await using var app = await TestApp.CreateAsync();
+        var owner = await app.RegisterAndLoginAsync(app.CreateUniqueUsername(), "pass1234");
+        var uploaded = await app.UploadFileAsync(owner, "public.txt", "data");
+
+        var first = await app.SendMutatingAsync(owner, HttpMethod.Post, $"/api/files/{uploaded.FileId}/share");
+        var firstJson = await first.Content.ReadFromJsonAsync<JsonElement>();
+        var firstToken = firstJson.GetProperty("shareToken").GetString();
+
+        var second = await app.SendMutatingAsync(owner, HttpMethod.Post, $"/api/files/{uploaded.FileId}/share");
+        var secondJson = await second.Content.ReadFromJsonAsync<JsonElement>();
+        var secondToken = secondJson.GetProperty("shareToken").GetString();
+
+        Assert.Equal(HttpStatusCode.OK, first.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, second.StatusCode);
+        Assert.Equal(firstToken, secondToken);
     }
 
     [Fact]
@@ -106,6 +431,84 @@ public sealed class FileShareApiTests
 
         var blockedResponse = await blockedUser.Client.GetAsync($"/api/share/{shareToken}");
         Assert.Equal(HttpStatusCode.Forbidden, blockedResponse.StatusCode);
+    }
+
+    [Fact]
+    public async Task DisableShare_MakesLinkUnavailable()
+    {
+        await using var app = await TestApp.CreateAsync();
+        var owner = await app.RegisterAndLoginAsync(app.CreateUniqueUsername(), "pass1234");
+        var uploaded = await app.UploadFileAsync(owner, "public.txt", "content");
+
+        var shareResponse = await app.SendMutatingAsync(owner, HttpMethod.Post, $"/api/files/{uploaded.FileId}/share");
+        var token = (await shareResponse.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("shareToken").GetString();
+
+        var disableResponse = await app.SendMutatingAsync(owner, HttpMethod.Delete, $"/api/files/{uploaded.FileId}/share");
+        Assert.Equal(HttpStatusCode.OK, disableResponse.StatusCode);
+
+        var anonymousClient = app.CreateClient();
+        var sharedAfterDisable = await anonymousClient.GetAsync($"/api/share/{token}");
+        Assert.Equal(HttpStatusCode.NotFound, sharedAfterDisable.StatusCode);
+    }
+
+    [Fact]
+    public async Task Whitelist_ListAndRemove_FlowWorks()
+    {
+        await using var app = await TestApp.CreateAsync();
+        var owner = await app.RegisterAndLoginAsync(app.CreateUniqueUsername(), "pass1234");
+        var allowed = await app.RegisterAndLoginAsync(app.CreateUniqueUsername(), "pass1234");
+        var uploaded = await app.UploadFileAsync(owner, "private.txt", "secret");
+
+        var addResponse = await app.SendMutatingJsonAsync(
+            owner,
+            HttpMethod.Post,
+            $"/api/files/{uploaded.FileId}/whitelist",
+            JsonContent.Create(new { username = allowed.Username }));
+        Assert.Equal(HttpStatusCode.OK, addResponse.StatusCode);
+
+        var listBeforeRemove = await owner.Client.GetFromJsonAsync<string[]>($"/api/files/{uploaded.FileId}/whitelist");
+        Assert.NotNull(listBeforeRemove);
+        Assert.Contains(allowed.Username, listBeforeRemove!);
+
+        var removeResponse = await app.SendMutatingAsync(owner, HttpMethod.Delete, $"/api/files/{uploaded.FileId}/whitelist/{allowed.Username}");
+        Assert.Equal(HttpStatusCode.OK, removeResponse.StatusCode);
+
+        var listAfterRemove = await owner.Client.GetFromJsonAsync<string[]>($"/api/files/{uploaded.FileId}/whitelist");
+        Assert.NotNull(listAfterRemove);
+        Assert.DoesNotContain(allowed.Username, listAfterRemove!);
+    }
+
+    [Fact]
+    public async Task Whitelist_AddUnknownUser_ReturnsNotFound()
+    {
+        await using var app = await TestApp.CreateAsync();
+        var owner = await app.RegisterAndLoginAsync(app.CreateUniqueUsername(), "pass1234");
+        var uploaded = await app.UploadFileAsync(owner, "private.txt", "secret");
+
+        var response = await app.SendMutatingJsonAsync(
+            owner,
+            HttpMethod.Post,
+            $"/api/files/{uploaded.FileId}/whitelist",
+            JsonContent.Create(new { username = "missing-user" }));
+
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Whitelist_WhenNonOwnerTriesToModify_ReturnsNotFound()
+    {
+        await using var app = await TestApp.CreateAsync();
+        var owner = await app.RegisterAndLoginAsync(app.CreateUniqueUsername(), "pass1234");
+        var stranger = await app.RegisterAndLoginAsync(app.CreateUniqueUsername(), "pass1234");
+        var uploaded = await app.UploadFileAsync(owner, "private.txt", "secret");
+
+        var response = await app.SendMutatingJsonAsync(
+            stranger,
+            HttpMethod.Post,
+            $"/api/files/{uploaded.FileId}/whitelist",
+            JsonContent.Create(new { username = owner.Username }));
+
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
     }
 
     [Fact]
@@ -149,22 +552,40 @@ file sealed class TestApp : IAsyncDisposable
 
     public string CreateUniqueUsername() => $"user_{Guid.NewGuid():N}";
 
-    public async Task<AuthSession> RegisterAndLoginAsync(string username, string password)
+    public Task RegisterAsync(string username, string password)
+    {
+        return RegisterAsync(username, password, $"{username}@test.local");
+    }
+
+    public async Task RegisterAsync(string username, string password, string email)
     {
         var client = _factory.CreateClient();
-        var email = $"{username}@test.local";
-
         var registerResponse = await client.PostAsJsonAsync("/api/auth/register", new { username, email, password });
-        Assert.True(registerResponse.StatusCode is HttpStatusCode.OK or HttpStatusCode.Conflict);
+        Assert.Equal(HttpStatusCode.OK, registerResponse.StatusCode);
+    }
 
+    public async Task<AuthSession> RegisterAndLoginAsync(string username, string password)
+    {
+        await RegisterAsync(username, password);
+        return await LoginAsync(username, password);
+    }
+
+    public async Task<AuthSession> LoginAsync(string username, string password)
+    {
+        var client = _factory.CreateClient();
         var loginResponse = await client.PostAsJsonAsync("/api/auth/login", new { username, password });
         Assert.Equal(HttpStatusCode.OK, loginResponse.StatusCode);
 
         var loginJson = await loginResponse.Content.ReadFromJsonAsync<JsonElement>();
         var csrfToken = loginJson.GetProperty("csrfToken").GetString();
         Assert.False(string.IsNullOrWhiteSpace(csrfToken));
-
         return new AuthSession(client, username, csrfToken!);
+    }
+
+    public async Task LogoutWithCsrfAsync(AuthSession session)
+    {
+        var response = await SendMutatingAsync(session, HttpMethod.Post, "/api/auth/logout");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
     }
 
     public async Task<UploadedFile> UploadFileAsync(AuthSession session, string fileName, string content)
