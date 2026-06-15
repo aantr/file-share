@@ -386,7 +386,7 @@ public sealed class FileShareApiTests
         await using var app = await TestApp.CreateAsync();
         var session = await app.RegisterAndLoginAsync(app.CreateUniqueUsername(), "pass1234");
 
-        var payload = new byte[AppConstants.MaxUploadBytes + 1];
+        var payload = new byte[WebConfigAppSettings.DefaultMaxFileSizeBytes + 1];
         var form = new MultipartFormDataContent
         {
             { new ByteArrayContent(payload), "file", "huge.bin" }

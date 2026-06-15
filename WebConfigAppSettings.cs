@@ -2,13 +2,19 @@ using System.Xml.Linq;
 
 public sealed record WebConfigAppSettings(string StorageFolderPath, long MaxFileSizeBytes)
 {
-    public long MaxRequestBodyBytes => MaxFileSizeBytes + AppConstants.RequestBodyOverheadBytes;
+    public const long DefaultMaxFileSizeBytes = 50L * 1024 * 1024;
+    public const long RequestBodyOverheadBytes = 10L * 1024 * 1024;
+    public const string DefaultStorageFolderPath = "storage";
+    public const string StorageFolderSettingKey = "StorageFolderPath";
+    public const string MaxFileSizeSettingKey = "MaxFileSizeBytes";
+
+    public long MaxRequestBodyBytes => MaxFileSizeBytes + RequestBodyOverheadBytes;
 
     public static WebConfigAppSettings Load(string contentRootPath)
     {
         var webConfigPath = Path.Combine(contentRootPath, "web.config");
-        var storageFolder = AppConstants.DefaultStorageFolderPath;
-        var maxFileSizeBytes = AppConstants.MaxUploadBytes;
+        var storageFolder = DefaultStorageFolderPath;
+        var maxFileSizeBytes = DefaultMaxFileSizeBytes;
 
         if (!File.Exists(webConfigPath))
         {
@@ -28,11 +34,11 @@ public sealed record WebConfigAppSettings(string StorageFolderPath, long MaxFile
                     continue;
                 }
 
-                if (string.Equals(key, AppConstants.StorageFolderSettingKey, StringComparison.OrdinalIgnoreCase))
+                if (string.Equals(key, StorageFolderSettingKey, StringComparison.OrdinalIgnoreCase))
                 {
                     storageFolder = value;
                 }
-                else if (string.Equals(key, AppConstants.MaxFileSizeSettingKey, StringComparison.OrdinalIgnoreCase) &&
+                else if (string.Equals(key, MaxFileSizeSettingKey, StringComparison.OrdinalIgnoreCase) &&
                          long.TryParse(value, out var parsedMaxFileSizeBytes) &&
                          parsedMaxFileSizeBytes > 0)
                 {
@@ -43,7 +49,7 @@ public sealed record WebConfigAppSettings(string StorageFolderPath, long MaxFile
         catch
         {
             // Fallback to defaults if web.config is missing or malformed.
-            return new WebConfigAppSettings(AppConstants.DefaultStorageFolderPath, AppConstants.MaxUploadBytes);
+            return new WebConfigAppSettings(DefaultStorageFolderPath, DefaultMaxFileSizeBytes);
         }
 
         return new WebConfigAppSettings(storageFolder, maxFileSizeBytes);
