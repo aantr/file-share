@@ -1,6 +1,6 @@
 {
   "version": 2,
-  "dgSpecHash": "F1ZVepKrgcc=",
+  "dgSpecHash": "2pxRiICLjrU=",
   "success": true,
   "projectFilePath": "C:\\Users\\123\\FileShareExpert\\FileShareExpert.csproj",
   "expectedPackageFiles": [
@@ -10,7 +10,11 @@
     "C:\\Users\\123\\.nuget\\packages\\sqlitepclraw.core\\2.1.6\\sqlitepclraw.core.2.1.6.nupkg.sha512",
     "C:\\Users\\123\\.nuget\\packages\\sqlitepclraw.lib.e_sqlite3\\2.1.6\\sqlitepclraw.lib.e_sqlite3.2.1.6.nupkg.sha512",
     "C:\\Users\\123\\.nuget\\packages\\sqlitepclraw.provider.e_sqlite3\\2.1.6\\sqlitepclraw.provider.e_sqlite3.2.1.6.nupkg.sha512",
-    "C:\\Users\\123\\.nuget\\packages\\system.memory\\4.5.3\\system.memory.4.5.3.nupkg.sha512"
+    "C:\\Users\\123\\.nuget\\packages\\system.memory\\4.5.3\\system.memory.4.5.3.nupkg.sha512",
+    "C:\\Users\\123\\.nuget\\packages\\microsoft.netcore.app.ref\\8.0.28\\microsoft.netcore.app.ref.8.0.28.nupkg.sha512",
+    "C:\\Users\\123\\.nuget\\packages\\microsoft.windowsdesktop.app.ref\\8.0.28\\microsoft.windowsdesktop.app.ref.8.0.28.nupkg.sha512",
+    "C:\\Users\\123\\.nuget\\packages\\microsoft.aspnetcore.app.ref\\8.0.28\\microsoft.aspnetcore.app.ref.8.0.28.nupkg.sha512",
+    "C:\\Users\\123\\.nuget\\packages\\microsoft.netcore.app.host.win-x64\\8.0.28\\microsoft.netcore.app.host.win-x64.8.0.28.nupkg.sha512"
   ],
   "logs": []
 }
